@@ -1,0 +1,10 @@
+{
+  "name": "whpd-citation-writer",
+  "version": "0.1.0",
+  "private": true,
+  "license": "0BSD",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/citation.test.js"
+  }
+}

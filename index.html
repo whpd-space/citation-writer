@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="A private, browser-local EVE Online citation desk for the Wormhole Police.">
+  <meta name="theme-color" content="#121b24">
+  <title>WHPD Citation Writer</title>
+  <link rel="icon" type="image/png" href="https://whpd.space/images/whpd.png">
+  <link rel="preconnect" href="https://whpd.space">
+  <link rel="preconnect" href="https://images.evetech.net">
+  <link rel="stylesheet" href="/css/app.css">
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const route = params.get('route');
+      if (!route) return;
+
+      const routeQuery = params.get('routeQuery') || '';
+      if (route.replace(/\/+$/, '') === '/callback') {
+        const callback = new URL('/auth.html', window.location.origin);
+        callback.search = routeQuery;
+        callback.hash = window.location.hash;
+        window.location.replace(callback.toString());
+        return;
+      }
+
+      history.replaceState(null, '', route + routeQuery + window.location.hash);
+    })();
+  </script>
+  <script type="module" src="/js/app.js"></script>
+</head>
+<body class="theme-dark layout-contained">
+  <header class="app-nav" aria-label="Primary navigation">
+    <div class="app-nav-inner">
+      <button class="brand" type="button" data-view-target="dashboard" aria-label="WHPD Citation Writer home">
+        <img class="brand-mark" src="https://whpd.space/images/whpd.png" alt="">
+        <span class="brand-copy">
+          <strong>WHPD</strong>
+          <small>Citation Writer</small>
+        </span>
+      </button>
+
+      <nav class="main-nav" aria-label="App sections">
+        <button type="button" class="nav-link is-active" data-view-target="dashboard">Desk</button>
+        <button type="button" class="nav-link" data-view-target="history">Ledger</button>
+        <button type="button" class="nav-link" data-view-target="settings">Settings</button>
+      </nav>
+
+      <div id="nav-characters" class="nav-characters" aria-label="Authorized characters"></div>
+
+      <div class="nav-actions">
+        <span id="network-status" class="network-status" aria-live="polite"></span>
+        <button id="sync-button" class="button button-primary button-small" type="button">Sync</button>
+        <button id="add-character-button" class="button button-ghost button-small" type="button">Add character</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <section id="welcome-view" class="welcome" hidden>
+      <div class="welcome-hero">
+        <div class="eyebrow">Wormhole Police Department</div>
+        <h1>From combat record to citation.</h1>
+        <p>Pull enforcement actions for every authorized character, prepare a rule-compliant citation, send it through EVE Mail, and keep a local ledger of every pilot contacted.</p>
+        <div class="welcome-actions">
+          <button id="welcome-login-button" class="button button-primary" type="button">Log in with EVE Online</button>
+        </div>
+        <p class="privacy-note"><span aria-hidden="true">◆</span> Tokens, killmails, settings, and citation history stay in this browser.</p>
+      </div>
+
+      <div class="feature-grid" aria-label="Application features">
+        <article class="feature-card">
+          <span class="feature-number">01</span>
+          <h2>Multi-officer intake</h2>
+          <p>One queue, deduplicated across every WHPD character you authorize.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-number">02</span>
+          <h2>Compliant drafting</h2>
+          <p>The exact section order, colors, terminology, disclaimer, and footer from the local rule block.</p>
+        </article>
+        <article class="feature-card">
+          <span class="feature-number">03</span>
+          <h2>Auditable delivery</h2>
+          <p>Send from the final-blow officer or a designated character and retain a recipient ledger.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="dashboard-view" class="view" aria-labelledby="desk-title">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">Enforcement desk</div>
+          <h1 id="desk-title">Citation queue</h1>
+          <p id="last-sync-copy" class="muted">Authorize a character to begin.</p>
+        </div>
+        <div id="summary-strip" class="summary-strip" aria-label="Citation summary"></div>
+      </div>
+
+      <div class="queue-toolbar">
+        <div class="segmented" role="group" aria-label="Killmail state">
+          <button type="button" class="segment is-active" data-status-filter="pending">Pending <span id="pending-count">0</span></button>
+          <button type="button" class="segment" data-status-filter="sent">Sent <span id="sent-count">0</span></button>
+          <button type="button" class="segment" data-status-filter="cleared">Cleared <span id="cleared-count">0</span></button>
+        </div>
+        <div class="queue-tools">
+          <form id="zkill-import-form" class="zkill-import">
+            <label>
+              <span class="sr-only">zKillboard link or kill ID</span>
+              <input id="zkill-import-input" type="text" placeholder="zKill link or kill ID" inputmode="url" autocomplete="off" required>
+            </label>
+            <button id="zkill-import-button" class="button button-secondary button-small" type="submit">Add record</button>
+          </form>
+          <label class="search-field">
+            <span class="sr-only">Search killmails</span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.15A7.5 7.5 0 1 1 4 11.5a7.5 7.5 0 0 1 15 0Z"/></svg>
+            <input id="queue-search" type="search" placeholder="Pilot, ship, or system" autocomplete="off">
+          </label>
+        </div>
+      </div>
+
+      <div class="workbench">
+        <section class="panel queue-panel" aria-labelledby="queue-panel-title">
+          <div class="panel-heading">
+            <div>
+              <h2 id="queue-panel-title">Combat records</h2>
+              <p id="queue-result-count" class="muted compact">0 records</p>
+            </div>
+          </div>
+          <div id="killmail-list" class="killmail-list"></div>
+        </section>
+
+        <section class="panel composer-panel" aria-labelledby="composer-title">
+          <div id="composer-empty" class="empty-state">
+            <div class="empty-glyph" aria-hidden="true">⌖</div>
+            <h2 id="composer-title">Select a combat record</h2>
+            <p>Choose a killmail to inspect the enforcement details and prepare its citation.</p>
+          </div>
+          <div id="composer-root"></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="history-view" class="view" hidden aria-labelledby="ledger-title">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">Permanent local record</div>
+          <h1 id="ledger-title">Citation ledger</h1>
+          <p class="muted">Who received a citation, which officer sent it, and when it left the desk.</p>
+        </div>
+        <div id="history-summary" class="summary-strip"></div>
+      </div>
+      <section class="panel ledger-panel">
+        <div id="history-root"></div>
+      </section>
+    </section>
+
+    <section id="settings-view" class="view" hidden aria-labelledby="settings-title">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">Local configuration</div>
+          <h1 id="settings-title">Settings</h1>
+          <p class="muted">Manage authorized characters, delivery policy, queue depth, and this device.</p>
+        </div>
+      </div>
+
+      <form id="settings-form" class="settings-grid">
+        <section class="panel settings-card custom-offenses-card">
+          <div class="settings-heading">
+            <span class="settings-icon" aria-hidden="true">LAW</span>
+            <div>
+              <h2>Custom Misdemeanors &amp; Felonies</h2>
+              <p>Add local offenses to the citation checklist. Legal Library entries remain unchanged.</p>
+            </div>
+          </div>
+          <div class="custom-offense-editor">
+            <label class="field">
+              <span>Classification</span>
+              <select id="custom-offense-classification">
+                <option value="Misdemeanor">Misdemeanor</option>
+                <option value="Felony">Felony</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Offense title</span>
+              <input id="custom-offense-title" type="text" maxlength="120" placeholder="Unauthorized Beacon Enthusiasm" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>Citation code or statute</span>
+              <input id="custom-offense-code" type="text" maxlength="160" placeholder="WHPD Code § 12.34" autocomplete="off">
+            </label>
+            <button id="add-custom-offense-button" class="button button-secondary" type="button">Add offense</button>
+          </div>
+          <div id="custom-offense-list" class="custom-offense-list" aria-live="polite"></div>
+        </section>
+
+        <section class="panel settings-card">
+          <div class="settings-heading">
+            <span class="settings-icon" aria-hidden="true">SSO</span>
+            <div>
+              <h2>Authorized characters</h2>
+              <p>Characters available for killmail intake and citation delivery on this device.</p>
+            </div>
+          </div>
+          <button id="settings-add-character-button" class="button button-secondary" type="button">Add character</button>
+          <div id="authorized-character-list" class="character-list"></div>
+        </section>
+
+        <section class="panel settings-card">
+          <div class="settings-heading">
+            <span class="settings-icon" aria-hidden="true">FROM</span>
+            <div>
+              <h2>EVE Mail sender</h2>
+              <p>Choose which authenticated character delivers the mail. This does not change the officer named in the citation.</p>
+            </div>
+          </div>
+          <label class="choice-row">
+            <input type="radio" name="sender-mode" value="final-blow">
+            <span><strong>Final-blow character</strong><small>Requires that officer to be authorized in this browser.</small></span>
+          </label>
+          <label class="choice-row">
+            <input type="radio" name="sender-mode" value="specified">
+            <span><strong>Specified character</strong><small>Always send from one designated character.</small></span>
+          </label>
+          <label class="field indented-field">
+            <span>Designated sender</span>
+            <select id="specified-sender-select"></select>
+          </label>
+          <label class="field mailing-list-field">
+            <span>Mailing list ID</span>
+            <input id="mailing-list-id-input" type="number" min="1" step="1" inputmode="numeric" required>
+            <small>Live citations go to both the cited pilot and this mailing list. TEST mode never sends to the list.</small>
+          </label>
+          <label class="toggle-row test-mode-setting">
+            <input id="test-mode-input" type="checkbox">
+            <span><strong>TEST mode</strong><small>Send citations to the involved officer for review without contacting the cited pilot, clearing the incident, or writing to the delivery ledger.</small></span>
+          </label>
+          <label class="toggle-row">
+            <input id="auto-clear-input" type="checkbox">
+            <span><strong>Remove from pending after sending</strong><small>The sent record remains available in the queue and ledger.</small></span>
+          </label>
+        </section>
+
+        <section class="panel settings-card">
+          <div class="settings-heading">
+            <span class="settings-icon" aria-hidden="true">UI</span>
+            <div>
+              <h2>Desk preferences</h2>
+              <p>Control display theme, layout width, and sync depth.</p>
+            </div>
+          </div>
+          <label class="field">
+            <span>Theme</span>
+            <select id="theme-select">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="system">System</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Layout width</span>
+            <select id="layout-width-select">
+              <option value="contained">Centered</option>
+              <option value="full">Full width</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Recent killmails per character</span>
+            <select id="page-count-select">
+              <option value="1">Up to 50</option>
+              <option value="2">Up to 100</option>
+              <option value="5">Up to 250</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="panel settings-card danger-card">
+          <div class="settings-heading">
+            <span class="settings-icon settings-icon-danger" aria-hidden="true">!</span>
+            <div>
+              <div class="settings-section-label">Danger</div>
+              <h2>Local data</h2>
+              <p>Manage records stored only on this device.</p>
+            </div>
+          </div>
+          <div class="button-stack">
+            <button id="clear-pending-button" class="button button-secondary" type="button">Clear all pending killmails</button>
+            <button id="clear-all-data-button" class="button button-danger" type="button">Erase all local app data</button>
+          </div>
+        </section>
+
+        <div class="settings-save-bar">
+          <p id="settings-status" class="muted" aria-live="polite"></p>
+          <button class="button button-primary" type="submit">Save settings</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <div>
+      <strong>WHPD Citation Writer</strong>
+      <span>Protecting the sanctity of J-space, one form at a time.</span>
+    </div>
+    <div>
+      <a href="https://whpd.space/LegalLibrary.html" target="_blank" rel="noopener noreferrer">Legal Library</a>
+      <a href="https://whpd.space" target="_blank" rel="noopener noreferrer">whpd.space</a>
+    </div>
+  </footer>
+
+  <dialog id="app-modal" class="app-modal" aria-labelledby="app-modal-title" aria-describedby="app-modal-message">
+    <div class="app-modal-heading">
+      <span id="app-modal-icon" class="app-modal-icon" aria-hidden="true">!</span>
+      <div>
+        <div class="eyebrow">WHPD Citation Writer</div>
+        <h2 id="app-modal-title">Attention</h2>
+      </div>
+      <button id="app-modal-close" class="app-modal-close" type="button" aria-label="Close dialog">×</button>
+    </div>
+    <p id="app-modal-message" class="app-modal-message"></p>
+    <div class="app-modal-actions">
+      <button id="app-modal-cancel" class="button button-secondary" type="button">Cancel</button>
+      <button id="app-modal-confirm" class="button button-primary" type="button">OK</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
