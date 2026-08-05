@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Redirecting | WHPD Citation Writer</title>
+  <link rel="icon" type="image/png" href="https://whpd.space/images/whpd.png">
+  <script>
+    (function () {
+      const url = new URL(window.location.href);
+      const target = new URL('/index.html', url.origin);
+      target.searchParams.set('route', url.pathname);
+      target.searchParams.set('routeQuery', url.search);
+      window.location.replace(target.toString() + url.hash);
+    })();
+  </script>
+</head>
+<body></body>
+</html>

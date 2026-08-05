@@ -1,0 +1,357 @@
+import { APP_CONFIG } from './config.js';
+
+const OAUTH_PREFIX = 'whpd:oauth:';
+const UNCONFIGURED_CLIENT_IDS = new Set([
+  '',
+  '--LOCAL-CLIENT-ID--',
+  '--PRODUCTION-CLIENT-ID--'
+]);
+
+function base64Url(bytes) {
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function decodeJwtPayload(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) throw new Error('EVE SSO returned an invalid access token.');
+  const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+  return JSON.parse(atob(padded));
+}
+
+async function parseResponse(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return text;
+  }
+}
+
+export function extractZkillValue(payload) {
+  const item = Array.isArray(payload) ? payload[0] : payload;
+  const totalValue = Number(item?.zkb?.totalValue ?? item?.totalValue);
+  return Number.isFinite(totalValue) && totalValue > 0 ? totalValue : null;
+}
+
+export function parseZkillKillmailId(value) {
+  const input = String(value || '').trim();
+  if (/^\d+$/.test(input)) {
+    const id = Number(input);
+    return Number.isSafeInteger(id) && id > 0 ? id : null;
+  }
+
+  try {
+    const url = new URL(input);
+    if (!['zkillboard.com', 'www.zkillboard.com'].includes(url.hostname.toLowerCase())) return null;
+    const match = url.pathname.match(/^\/(?:kill|api\/killID)\/(\d+)\/?$/i);
+    const id = Number(match?.[1]);
+    return Number.isSafeInteger(id) && id > 0 ? id : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+export function extractZkillKillmail(payload, expectedKillmailId = null) {
+  const item = Array.isArray(payload) ? payload[0] : payload;
+  const killmailId = Number(item?.killmail_id);
+  if (!Number.isSafeInteger(killmailId) || killmailId <= 0) {
+    throw new Error('zKillboard did not return a valid killmail.');
+  }
+  if (expectedKillmailId && killmailId !== Number(expectedKillmailId)) {
+    throw new Error('zKillboard returned a different killmail than requested.');
+  }
+  if (!item?.victim || !Array.isArray(item?.attackers) || !item?.killmail_time || !item?.solar_system_id) {
+    throw new Error('zKillboard returned an incomplete killmail.');
+  }
+
+  const { zkb = {}, ...detail } = item;
+  const totalValue = Number(zkb.totalValue);
+  return {
+    id: killmailId,
+    hash: typeof zkb.hash === 'string' ? zkb.hash : '',
+    detail,
+    totalValue: Number.isFinite(totalValue) && totalValue > 0 ? totalValue : null
+  };
+}
+
+export function buildMailRecipients(recipientIds, mailingListId = null) {
+  const requestedIds = Array.isArray(recipientIds) ? recipientIds : [recipientIds];
+  const normalizedRecipientIds = [...new Set(requestedIds.map(Number))];
+  if (!normalizedRecipientIds.length || normalizedRecipientIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new Error('At least one valid EVE Mail recipient ID is required.');
+  }
+
+  const recipients = normalizedRecipientIds.map((recipientId) => ({
+    recipient_id: recipientId,
+    recipient_type: 'character'
+  }));
+  if (mailingListId !== null && mailingListId !== undefined && mailingListId !== '') {
+    const normalizedMailingListId = Number(mailingListId);
+    if (!Number.isSafeInteger(normalizedMailingListId) || normalizedMailingListId <= 0) {
+      throw new Error('A valid EVE Mail mailing list ID is required.');
+    }
+    recipients.push({ recipient_id: normalizedMailingListId, recipient_type: 'mailing_list' });
+  }
+
+  return recipients;
+}
+
+export class ESIError extends Error {
+  constructor(message, status = 0, payload = null) {
+    super(message);
+    this.name = 'ESIError';
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
+export class ESIClient {
+  constructor(store) {
+    this.store = store;
+  }
+
+  get clientId() {
+    if (window.location.hostname === 'localhost') return APP_CONFIG.localClientId;
+    if (window.location.hostname === APP_CONFIG.productionHost) return APP_CONFIG.productionClientId;
+    return APP_CONFIG.productionClientId || APP_CONFIG.localClientId;
+  }
+
+  isConfigured() {
+    return !UNCONFIGURED_CLIENT_IDS.has(String(this.clientId || '').trim());
+  }
+
+  get callbackUrl() {
+    if (window.location.hostname === 'localhost') return APP_CONFIG.localCallbackUrl;
+    if (window.location.hostname === APP_CONFIG.productionHost) return APP_CONFIG.productionCallbackUrl;
+    return `${window.location.origin}/callback`;
+  }
+
+  async beginAuthorization() {
+    if (!this.isConfigured()) throw new Error('EVE SSO is not configured for this deployment.');
+
+    const verifierBytes = crypto.getRandomValues(new Uint8Array(48));
+    const verifier = base64Url(verifierBytes);
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+    const challenge = base64Url(new Uint8Array(digest));
+    const state = base64Url(crypto.getRandomValues(new Uint8Array(24)));
+
+    sessionStorage.setItem(`${OAUTH_PREFIX}verifier`, verifier);
+    sessionStorage.setItem(`${OAUTH_PREFIX}state`, state);
+
+    const params = new URLSearchParams({
+      response_type: 'code',
+      redirect_uri: this.callbackUrl,
+      client_id: this.clientId,
+      scope: APP_CONFIG.scopes.join(' '),
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      state
+    });
+
+    window.location.assign(`${APP_CONFIG.ssoAuthorizeUrl}?${params}`);
+  }
+
+  async handleAuthorizationCallback(search = window.location.search) {
+    const params = new URLSearchParams(search);
+    const expectedState = sessionStorage.getItem(`${OAUTH_PREFIX}state`);
+    const verifier = sessionStorage.getItem(`${OAUTH_PREFIX}verifier`);
+    const error = params.get('error');
+
+    if (error) throw new Error(params.get('error_description') || `EVE SSO declined authorization: ${error}`);
+    if (!expectedState || params.get('state') !== expectedState) throw new Error('EVE SSO state validation failed. Start the login again.');
+    if (!verifier || !params.get('code')) throw new Error('The EVE SSO callback is missing its authorization code.');
+
+    const token = await this.requestToken({
+      grant_type: 'authorization_code',
+      code: params.get('code'),
+      client_id: this.clientId,
+      code_verifier: verifier
+    });
+
+    const claims = decodeJwtPayload(token.access_token);
+    const subject = String(claims.sub || '');
+    const characterId = Number(subject.replace('CHARACTER:EVE:', ''));
+    if (!Number.isSafeInteger(characterId) || characterId <= 0) throw new Error('The EVE access token did not identify a character.');
+
+    const character = {
+      id: characterId,
+      name: claims.name || `Character ${characterId}`,
+      accessToken: token.access_token,
+      refreshToken: token.refresh_token,
+      expiresAt: Date.now() + (Number(token.expires_in || 1200) - 30) * 1000,
+      scopes: String(claims.scp || APP_CONFIG.scopes.join(' ')).split(/\s+/).filter(Boolean),
+      addedAt: Date.now()
+    };
+
+    await this.store.put('characters', character);
+    sessionStorage.removeItem(`${OAUTH_PREFIX}state`);
+    sessionStorage.removeItem(`${OAUTH_PREFIX}verifier`);
+    return character;
+  }
+
+  async requestToken(fields) {
+    const response = await fetch(APP_CONFIG.ssoTokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(fields)
+    });
+    const payload = await parseResponse(response);
+    if (!response.ok || !payload?.access_token) {
+      throw new ESIError(payload?.error_description || payload?.error || 'EVE SSO token request failed.', response.status, payload);
+    }
+    return payload;
+  }
+
+  async accessToken(characterId, forceRefresh = false) {
+    const character = await this.store.get('characters', Number(characterId));
+    if (!character) throw new Error('That sending character is no longer logged in.');
+    if (!forceRefresh && character.accessToken && character.expiresAt > Date.now()) return character.accessToken;
+    if (!character.refreshToken) throw new Error(`${character.name} has no refresh token. Add the character again.`);
+
+    const token = await this.requestToken({
+      grant_type: 'refresh_token',
+      refresh_token: character.refreshToken,
+      client_id: this.clientId
+    });
+
+    const updated = {
+      ...character,
+      accessToken: token.access_token,
+      refreshToken: token.refresh_token || character.refreshToken,
+      expiresAt: Date.now() + (Number(token.expires_in || 1200) - 30) * 1000
+    };
+    await this.store.put('characters', updated);
+    return updated.accessToken;
+  }
+
+  async request(path, options = {}) {
+    const method = options.method || 'GET';
+    const headers = {
+      Accept: 'application/json',
+      'X-Compatibility-Date': APP_CONFIG.compatibilityDate,
+      'X-User-Agent': APP_CONFIG.userAgent,
+      ...(options.headers || {})
+    };
+
+    if (options.characterId) {
+      headers.Authorization = `Bearer ${await this.accessToken(options.characterId, options.forceRefresh)}`;
+    }
+
+    let body;
+    if (options.body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(options.body);
+    }
+
+    const url = path.startsWith('http') ? path : `${APP_CONFIG.esiBaseUrl}${path}`;
+    const response = await fetch(url, { method, headers, body });
+
+    if (response.status === 401 && options.characterId && !options.forceRefresh) {
+      return this.request(path, { ...options, forceRefresh: true });
+    }
+
+    if (response.status === 429) {
+      const retryAfter = Number(response.headers.get('Retry-After') || 0);
+      throw new ESIError(`ESI rate limit reached. Try again in ${retryAfter || 'a few'} seconds.`, 429);
+    }
+
+    const payload = await parseResponse(response);
+    if (!response.ok) {
+      const message = payload?.error || payload?.message || `ESI request failed with status ${response.status}.`;
+      throw new ESIError(message, response.status, payload);
+    }
+
+    return { data: payload, headers: response.headers, status: response.status };
+  }
+
+  async recentKillmails(characterId, page = 1) {
+    return this.request(`/characters/${characterId}/killmails/recent?page=${page}`, { characterId });
+  }
+
+  async killmail(killmailId, hash) {
+    const encodedHash = encodeURIComponent(hash);
+    const response = await this.request(`/killmails/${killmailId}/${encodedHash}`);
+    return response.data;
+  }
+
+  async resolveNames(ids) {
+    const normalized = [...new Set(ids.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const resolved = new Map();
+    const missing = [];
+
+    for (const id of normalized) {
+      const cached = await this.store.get('names', id);
+      if (cached) resolved.set(id, cached.name);
+      else missing.push(id);
+    }
+
+    for (let index = 0; index < missing.length; index += 1000) {
+      const chunk = missing.slice(index, index + 1000);
+      if (!chunk.length) continue;
+      try {
+        const response = await this.request('/universe/names', { method: 'POST', body: chunk });
+        const records = (response.data || []).map((item) => ({
+          id: Number(item.id),
+          name: item.name,
+          category: item.category,
+          cachedAt: Date.now()
+        }));
+        await this.store.putMany('names', records);
+        records.forEach((record) => resolved.set(record.id, record.name));
+      } catch (error) {
+        console.warn('Unable to resolve one or more ESI names.', error);
+      }
+    }
+
+    normalized.forEach((id) => {
+      if (!resolved.has(id)) resolved.set(id, `ID ${id}`);
+    });
+    return resolved;
+  }
+
+  async zkillValue(killmailId) {
+    const normalizedId = Number(killmailId);
+    if (!Number.isSafeInteger(normalizedId) || normalizedId <= 0) {
+      throw new Error('A valid killmail ID is required for zKillboard appraisal.');
+    }
+
+    const response = await fetch(`https://zkillboard.com/api/killID/${normalizedId}/`, {
+      headers: { Accept: 'application/json' }
+    });
+    if (!response.ok) throw new Error(`zKillboard value lookup returned ${response.status}.`);
+    const payload = await response.json();
+    return extractZkillValue(payload);
+  }
+
+  async zkillKillmail(killmailId) {
+    const normalizedId = Number(killmailId);
+    if (!Number.isSafeInteger(normalizedId) || normalizedId <= 0) {
+      throw new Error('A valid killmail ID is required for zKillboard import.');
+    }
+
+    const response = await fetch(`https://zkillboard.com/api/killID/${normalizedId}/`, {
+      headers: { Accept: 'application/json' }
+    });
+    if (!response.ok) throw new Error(`zKillboard import returned ${response.status}.`);
+    return extractZkillKillmail(await response.json(), normalizedId);
+  }
+
+  async sendCitation(senderId, recipientIds, subject, body, { mailingListId = null } = {}) {
+    const response = await this.request(`/characters/${senderId}/mail`, {
+      method: 'POST',
+      characterId: senderId,
+      body: {
+        approved_cost: 10001,
+        recipients: buildMailRecipients(recipientIds, mailingListId),
+        subject,
+        body
+      }
+    });
+    return response.data;
+  }
+}

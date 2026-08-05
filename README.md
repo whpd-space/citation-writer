@@ -1,0 +1,52 @@
+# WHPD Citation Writer
+
+Create, send, and track Wormhole Police citations from EVE Online combat records.
+
+Open the app at [cw.whpd.space](https://cw.whpd.space).
+
+## Using the citation desk
+
+1. Log in with one or more EVE characters.
+2. Select **Sync** to load recent combat records, or add a zKillboard link manually.
+3. Select one record or check several records to combine them into one citation.
+4. Choose the applicable misdemeanors and felonies.
+5. Review the citation, add optional Officer Comments, and send it.
+6. Use the Ledger to see which pilots have already received citations.
+
+## Features
+
+- Supports multiple authorized EVE characters.
+- Groups a ship kill with the pilot's following pod loss.
+- Combines multiple pilots and combat records into one citation.
+- Retrieves kill values from zKillboard.
+- Includes in-game killmail and zKillboard links.
+- Provides the full WHPD Legal Library as an alphabetical checklist.
+- Supports your own custom misdemeanors and felonies.
+- Supports Officer, Deputy, Fleet, and Memefleet attribution.
+- Can send from the final-blow character or a designated character.
+- Sends live citations to the configured mailing list.
+- Provides TEST mode for sending citations only to the involved officers.
+- Tracks sent and cleared records in a local ledger.
+- Displays all dates and times in UTC.
+- Offers dark, light, and system themes with centered or full-width layouts.
+
+## Settings
+
+Settings lets you:
+
+- Choose the EVE Mail sender.
+- Change the mailing list ID.
+- Enable TEST mode.
+- Add or remove custom offenses.
+- Change the theme and layout width.
+- Remove authorized characters or erase all local app data.
+
+## Your data
+
+Characters, settings, combat records, and citation history stay in the current browser. Clearing the browser's site data or selecting **Erase all local app data** removes them.
+
+Clearing a combat record only removes it from the pending citation queue. It does not delete the EVE killmail.
+
+## License
+
+[Zero-Clause BSD](LICENSE): use it however you want.
