@@ -21,7 +21,7 @@ import {
   validateCitation
 } from '../js/citation.js';
 import { APP_CONFIG } from '../js/config.js';
-import { buildMailRecipients, extractCharacterMatch, extractZkillKillmail, extractZkillValue, parseZkillKillmailId } from '../js/esi.js';
+import { buildMailRecipients, ESIClient, extractCharacterMatch, extractZkillKillmail, extractZkillValue, parseZkillKillmailId } from '../js/esi.js';
 import { formatRelativeTime, formatUtcDateTime, isoUtcDateTime } from '../js/time.js';
 import { attackerRoleForFinalBlow, classifyKillmail, combineKillmailGroups, countDistinctAttackingPilots, groupKillmails, isPodKillmail, POD_PAIR_WINDOW_MS, selectInvolvedOfficer } from '../js/killmail-groups.js';
 
@@ -440,6 +440,64 @@ test('reads total value from the zKillboard killID response shape', () => {
 
   assert.equal(extractZkillValue(payload), 304950731.23);
   assert.equal(extractZkillValue([]), null);
+});
+
+test('submits a missing killmail to zKillboard and retries its appraisal', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let appraisalRequests = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (options.method === 'POST') return { ok: true, status: 200 };
+    appraisalRequests += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => appraisalRequests < 3 ? [] : [{ zkb: { totalValue: 42000000 } }]
+    };
+  };
+
+  try {
+    const value = await new ESIClient(null).zkillValue(
+      136980595,
+      'baa8832d86d498781edbcc99363700213787f761',
+      { retryDelay: 0 }
+    );
+    assert.equal(value, 42000000);
+    assert.equal(appraisalRequests, 3);
+    assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
+    assert.equal(
+      calls.find((call) => call.options.method === 'POST').url,
+      'https://zkillboard.com/api/killmail/add/136980595/baa8832d86d498781edbcc99363700213787f761/'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('tries a submitted zKillboard appraisal five times before failing', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (options.method === 'POST') return { ok: true, status: 200 };
+    return { ok: true, status: 200, json: async () => [] };
+  };
+
+  try {
+    await assert.rejects(
+      () => new ESIClient(null).zkillValue(
+        136980595,
+        'baa8832d86d498781edbcc99363700213787f761',
+        { retryDelay: 0 }
+      ),
+      /remained unavailable after 5 retries/
+    );
+    assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
+    assert.equal(calls.filter((call) => call.options.method !== 'POST').length, 6);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('parses zKillboard links and validates complete killmail import responses', () => {

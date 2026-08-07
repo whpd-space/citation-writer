@@ -342,18 +342,57 @@ export class ESIClient {
     };
   }
 
-  async zkillValue(killmailId) {
+  async zkillValue(killmailId, killmailHash = '', { retryDelay = 3000 } = {}) {
     const normalizedId = Number(killmailId);
     if (!Number.isSafeInteger(normalizedId) || normalizedId <= 0) {
       throw new Error('A valid killmail ID is required for zKillboard appraisal.');
     }
 
-    const response = await fetch(`https://zkillboard.com/api/killID/${normalizedId}/`, {
-      headers: { Accept: 'application/json' }
-    });
-    if (!response.ok) throw new Error(`zKillboard value lookup returned ${response.status}.`);
-    const payload = await response.json();
-    return extractZkillValue(payload);
+    const fetchValue = async () => {
+      const response = await fetch(`https://zkillboard.com/api/killID/${normalizedId}/`, {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store'
+      });
+      if (!response.ok) throw new Error(`zKillboard value lookup returned ${response.status}.`);
+      return extractZkillValue(await response.json());
+    };
+
+    let lastError;
+    try {
+      const totalValue = await fetchValue();
+      if (totalValue) return totalValue;
+      lastError = new Error('zKillboard did not return a total value for this killmail.');
+    } catch (error) {
+      lastError = error;
+    }
+
+    const normalizedHash = String(killmailHash || '').trim();
+    if (!/^[a-f0-9]{40}$/i.test(normalizedHash)) {
+      throw new Error('zKillboard appraisal was unavailable and the killmail has no valid hash to submit.');
+    }
+
+    try {
+      const response = await fetch(`https://zkillboard.com/api/killmail/add/${normalizedId}/${encodeURIComponent(normalizedHash)}/`, {
+        method: 'POST',
+        headers: { Accept: 'application/json' }
+      });
+      if (!response.ok) throw new Error(`zKillboard killmail submission returned ${response.status}.`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+      try {
+        const totalValue = await fetchValue();
+        if (totalValue) return totalValue;
+        lastError = new Error('zKillboard did not return a total value for this killmail.');
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw new Error(`zKillboard appraisal remained unavailable after 5 retries: ${lastError.message}`);
   }
 
   async zkillKillmail(killmailId) {
