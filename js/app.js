@@ -9,6 +9,7 @@ import {
   formatIsk,
   formatShipTypeCounts,
   makeCitationDraft,
+  makeManualCitationDraft,
   sortOffensesAlphabetically,
   validateCitation
 } from './citation.js';
@@ -47,6 +48,7 @@ const state = {
   search: '',
   selectedKillmailId: null,
   bundledIncidentIds: new Set(),
+  manualCitation: null,
   draft: null,
   syncing: false,
   importingZkill: false,
@@ -153,10 +155,14 @@ function applyKillmailClassification(killmail, managed = managedCharacterIds()) 
 }
 
 function selectedKillmail() {
+  if (state.manualCitation) return state.manualCitation;
   return state.killmails.find((killmail) => Number(killmail.id) === Number(state.selectedKillmailId)) || null;
 }
 
 function selectedKillmailGroup() {
+  if (state.manualCitation) {
+    return { id: 'manual', primary: state.manualCitation, pod: null, records: [state.manualCitation], incidentCount: 1 };
+  }
   const groups = groupKillmails(state.killmails.filter((killmail) => killmail.status === state.statusFilter));
   const selected = groups.find((group) => group.records.some((killmail) => Number(killmail.id) === Number(state.selectedKillmailId))) || null;
   const bundled = groups.filter((group) => state.bundledIncidentIds.has(Number(group.id)));
@@ -184,6 +190,14 @@ function setDraftAttackerType(draft, attackerType, group) {
     ? attackerType
     : 'officer';
   draft.attackerType = normalizedType;
+  if (group?.primary?.manualCitation) {
+    if (normalizedType === 'fleet' || normalizedType === 'memefleet') {
+      draft.officerName = normalizedType === 'memefleet' ? 'Memefleet Participants' : 'Fleet Participants';
+    } else if (!cleanCitationText(draft.officerName) || /fleet participants$/i.test(draft.officerName)) {
+      draft.officerName = groupedKillmail.enriched?.officerName || senderFor(group.primary)?.name || '';
+    }
+    return draft;
+  }
   if (normalizedType === 'fleet' || normalizedType === 'memefleet') {
     const participantCount = countDistinctAttackingPilots(group.records);
     const fleetName = normalizedType === 'memefleet' ? 'Memefleet' : 'Fleet';
@@ -201,6 +215,10 @@ function createCitationDraft(group, sender) {
   groupedKillmail.attackerType = rememberedAttackerType(group.primary);
   groupedKillmail.customOffenses = state.settings.customOffenses;
   return makeCitationDraft(groupedKillmail, sender);
+}
+
+function createManualCitationDraft(sender) {
+  return makeManualCitationDraft(sender, [], Math.random, state.settings.customOffenses);
 }
 
 function formatNameList(values, fallback = '') {
@@ -265,6 +283,12 @@ function citationKillmail(group) {
 }
 
 function senderFor(killmail) {
+  if (killmail?.manualCitation) {
+    return getCharacter(killmail.senderId)
+      || (state.settings.senderMode === 'specified' ? getCharacter(state.settings.specifiedSenderId) : null)
+      || state.characters[0]
+      || null;
+  }
   if (state.settings.senderMode === 'specified') {
     return getCharacter(state.settings.specifiedSenderId);
   }
@@ -414,7 +438,7 @@ function renderDashboard() {
     const retryAt = Number(killmail.zkbLookupErrorAt || 0) + ZKILL_RETRY_COOLDOWN;
     return !killmail.totalValue && !state.zkbLoadingIds.has(Number(killmail.id)) && Date.now() >= retryAt;
   });
-  if (group && hasDueAppraisal) {
+  if (group && !group.primary?.manualCitation && hasDueAppraisal) {
     queueMicrotask(() => ensureZkillValues(group.records, { notifyFailure: false }));
   }
 }
@@ -471,25 +495,27 @@ function renderKillmailList() {
       ? 'No combat records match this queue and search.'
       : 'Sync authorized characters to pull recent killmails from ESI.';
     list.innerHTML = `<div class="list-empty"><div><div class="empty-glyph" aria-hidden="true">⌁</div><p>${h(copy)}</p></div></div>`;
-    if (!selectedKillmail() || selectedKillmail()?.status !== state.statusFilter) {
+    if (!state.manualCitation && (!selectedKillmail() || selectedKillmail()?.status !== state.statusFilter)) {
       state.selectedKillmailId = null;
       state.draft = null;
     }
     return;
   }
 
-  let selectedGroup = groups.find((group) => group.records.some((record) => Number(record.id) === Number(state.selectedKillmailId)));
-  if (bundledGroups.length && (!selectedGroup || !state.bundledIncidentIds.has(Number(selectedGroup.id)))) {
-    selectedGroup = bundledGroups[0];
-    state.selectedKillmailId = selectedGroup.primary.id;
-    state.draft = null;
-  }
-  if (!selectedGroup) {
-    selectedGroup = groups[0];
-    state.selectedKillmailId = selectedGroup.primary.id;
-    state.draft = null;
-  } else if (Number(state.selectedKillmailId) !== Number(selectedGroup.primary.id)) {
-    state.selectedKillmailId = selectedGroup.primary.id;
+  if (!state.manualCitation) {
+    let selectedGroup = groups.find((group) => group.records.some((record) => Number(record.id) === Number(state.selectedKillmailId)));
+    if (bundledGroups.length && (!selectedGroup || !state.bundledIncidentIds.has(Number(selectedGroup.id)))) {
+      selectedGroup = bundledGroups[0];
+      state.selectedKillmailId = selectedGroup.primary.id;
+      state.draft = null;
+    }
+    if (!selectedGroup) {
+      selectedGroup = groups[0];
+      state.selectedKillmailId = selectedGroup.primary.id;
+      state.draft = null;
+    } else if (Number(state.selectedKillmailId) !== Number(selectedGroup.primary.id)) {
+      state.selectedKillmailId = selectedGroup.primary.id;
+    }
   }
 
   list.innerHTML = groups.map((group) => {
@@ -539,6 +565,7 @@ function renderKillmailList() {
 }
 
 async function selectKillmail(killmailId) {
+  state.manualCitation = null;
   state.bundledIncidentIds.clear();
   state.selectedKillmailId = Number(killmailId);
   state.draft = null;
@@ -548,7 +575,41 @@ async function selectKillmail(killmailId) {
   await ensureZkillValues(selectedKillmailGroup()?.records || [], { force: true });
 }
 
+function beginManualCitation() {
+  const sender = (state.settings.senderMode === 'specified' && getCharacter(state.settings.specifiedSenderId))
+    || state.characters[0]
+    || null;
+  state.selectedKillmailId = null;
+  state.bundledIncidentIds.clear();
+  state.manualCitation = {
+    manualCitation: true,
+    id: null,
+    recipientId: null,
+    senderId: sender?.id || null,
+    status: 'pending',
+    actionable: true,
+    direction: 'action',
+    finalBlowCharacterId: sender?.id || null,
+    officerCharacterId: sender?.id || null,
+    detail: { victim: {} },
+    enriched: {
+      victimName: '',
+      victimCorporationName: '',
+      victimAllianceName: '',
+      victimShipName: '',
+      systemName: '',
+      officerName: sender?.name || '',
+      officerShipName: ''
+    }
+  };
+  state.draft = createManualCitationDraft(sender);
+  renderKillmailList();
+  renderComposer();
+  queueMicrotask(() => document.querySelector('[data-draft-field="pilotName"]')?.focus());
+}
+
 async function toggleBundledIncident(groupId, checked) {
+  state.manualCitation = null;
   const groups = visibleKillmailGroups();
   const group = groups.find((item) => Number(item.id) === Number(groupId));
   if (!group) return;
@@ -640,34 +701,73 @@ function renderComposer() {
   }
 
   empty.hidden = true;
+  const manual = Boolean(killmail.manualCitation);
   const victim = killmail.detail?.victim || {};
   const sender = senderFor(killmail);
+  if (manual && !state.draft) state.draft = createManualCitationDraft(sender);
   const groupedKillmail = citationKillmail(group);
-  const victimName = groupedKillmail.enriched?.victimName || 'Unknown pilot';
-  const groupOfficers = officersForGroup(group);
+  const victimName = manual
+    ? (state.draft.pilotName || 'New manual citation')
+    : (groupedKillmail.enriched?.victimName || 'Unknown pilot');
+  const groupOfficers = manual ? [sender].filter(Boolean) : officersForGroup(group);
   const officerNames = formatNameList(groupOfficers.map((officer) => officer.name), 'the involved officer');
   const groupKey = group.records.map((record) => Number(record.id)).join(':');
   const draftKey = (state.draft?.sourceKillmailIds || []).map(Number).join(':');
-  if (!state.draft || draftKey !== groupKey) state.draft = createCitationDraft(group, sender);
+  if (!manual && (!state.draft || draftKey !== groupKey)) state.draft = createCitationDraft(group, sender);
   const attackerType = state.draft.attackerType || 'officer';
   const isFleetAttacker = attackerType === 'fleet' || attackerType === 'memefleet';
 
-  const statusAction = killmail.status === 'pending'
+  const statusAction = manual
+    ? '<button type="button" class="button button-secondary button-small" data-action="cancel-manual-citation">Cancel</button>'
+    : (killmail.status === 'pending'
     ? '<button type="button" class="button button-secondary button-small" data-action="clear-record">Clear</button>'
-    : '<button type="button" class="button button-secondary button-small" data-action="restore-record">Restore to pending</button>';
-  const appraisalLoading = group.records.some((record) => state.zkbLoadingIds.has(Number(record.id)));
+    : '<button type="button" class="button button-secondary button-small" data-action="restore-record">Restore to pending</button>');
+  const appraisalLoading = !manual && group.records.some((record) => state.zkbLoadingIds.has(Number(record.id)));
   const totalValue = groupTotalValue(group);
-  const appraisalAction = !totalValue
+  const appraisalAction = !manual && !totalValue
     ? `<button type="button" class="button button-ghost button-small" data-action="retry-zkill" ${appraisalLoading ? 'disabled' : ''}>${appraisalLoading ? 'Appraising…' : 'Get value'}</button>`
     : '';
   const appraisalValue = formatIsk(totalValue)
     || (appraisalLoading ? 'Loading from zKillboard…' : 'Unavailable · manual entry allowed');
   const incidentCount = Number(group.incidentCount) || 1;
   const bundleSummary = incidentCount > 1 ? `${incidentCount} incidents · ${group.records.length} combat records · ` : '';
-  const combatRecordLinks = group.records.map((record) => {
+  const combatRecordLinks = manual ? '' : group.records.map((record) => {
     const label = isPodKillmail(record) ? `Pod killmail #${record.id}` : `Killmail #${record.id}`;
     return `<a href="https://zkillboard.com/kill/${record.id}/" target="_blank" rel="noopener noreferrer">${h(label)}</a>`;
   }).join(' + ');
+
+  const manualRecipientId = Number(killmail.recipientId);
+  const hasManualRecipient = Number.isSafeInteger(manualRecipientId) && manualRecipientId > 0;
+  const manualFields = manual ? `
+    <div class="manual-citation-fields">
+      <div class="manual-recipient-field">
+        <label class="composer-field">
+          <span>Recipient pilot</span>
+          <input data-draft-field="pilotName" value="${h(state.draft.pilotName)}" placeholder="Exact EVE character name" autocomplete="off">
+        </label>
+        <button id="resolve-manual-recipient" type="button" class="button ${hasManualRecipient ? 'button-secondary' : 'button-primary'}" data-action="resolve-manual-recipient" ${killmail.resolvingRecipient ? 'disabled' : ''}>${killmail.resolvingRecipient ? 'Finding…' : (hasManualRecipient ? 'Verified' : 'Find pilot')}</button>
+      </div>
+      <p id="manual-recipient-status" class="manual-recipient-status ${hasManualRecipient ? 'is-verified' : ''}">${hasManualRecipient ? `EVE Mail recipient verified as ${h(killmail.resolvedName || state.draft.pilotName)} · Character #${manualRecipientId}` : 'Find the exact character before sending.'}</p>
+      <div class="field-grid">
+        <label class="composer-field">
+          <span>Corporation</span>
+          <input data-draft-field="corporationName" value="${h(state.draft.corporationName)}" placeholder="Pilot corporation">
+        </label>
+        <label class="composer-field">
+          <span>Alliance · optional</span>
+          <input data-draft-field="allianceName" value="${h(state.draft.allianceName)}" placeholder="Pilot alliance">
+        </label>
+        <label class="composer-field">
+          <span>System</span>
+          <input data-draft-field="systemName" value="${h(state.draft.systemName)}" placeholder="J123456">
+        </label>
+        <label class="composer-field">
+          <span>Destroyed ship</span>
+          <input data-draft-field="destroyedShipName" value="${h(state.draft.destroyedShipName)}" placeholder="Venture">
+        </label>
+      </div>
+    </div>
+  ` : '';
 
   const senderOptions = state.characters.map((character) => `
     <option value="${character.id}" ${Number(character.id) === Number(sender?.id) ? 'selected' : ''}>${h(character.name)}</option>
@@ -675,17 +775,17 @@ function renderComposer() {
 
   root.innerHTML = `
     <div class="composer-header">
-      <img src="${victim.character_id ? characterPortrait(victim.character_id, 64) : typeIcon(victim.ship_type_id, 64)}" alt="">
+      <img src="${manual ? (hasManualRecipient ? characterPortrait(manualRecipientId, 64) : 'https://whpd.space/images/whpd.png') : (victim.character_id ? characterPortrait(victim.character_id, 64) : typeIcon(victim.ship_type_id, 64))}" alt="">
       <div>
         <h2>${h(victimName)}</h2>
-        <p>${h(groupedKillmail.enriched?.victimCorporationName || 'Unknown corporation')} · ${h(bundleSummary)}${combatRecordLinks} · ${utcTimeElement(killmail.killmailTime)}</p>
+        <p>${manual ? 'Manual citation · no combat record attached' : `${h(groupedKillmail.enriched?.victimCorporationName || 'Unknown corporation')} · ${h(bundleSummary)}${combatRecordLinks} · ${utcTimeElement(killmail.killmailTime)}`}</p>
       </div>
       <div class="composer-header-actions">
         ${appraisalAction}
         ${statusAction}
       </div>
     </div>
-    <div class="record-facts">
+    ${manual ? '<div class="manual-mode-notice"><strong>Manual citation</strong><span>Enter the incident details below. A killmail and zKillboard evidence link are not required.</span></div>' : `<div class="record-facts">
       ${recordFact(group.records.length > 1 ? 'Systems' : 'System', groupedKillmail.enriched?.systemName || 'Unknown')}
       ${recordFact(group.records.length > 1 ? 'Destroyed ships' : 'Destroyed ship', groupedKillmail.enriched?.victimShipName || 'Unknown')}
       ${recordFact(
@@ -693,14 +793,15 @@ function renderComposer() {
         state.draft.officerName || 'Unknown'
       )}
       ${recordFact(group.records.every((record) => record.valueSource === 'zkillboard') ? 'zKill appraisal' : 'Total value', appraisalValue)}
-    </div>
+    </div>`}
     ${state.settings.testMode ? `<div class="test-mode-notice"><strong>TEST mode</strong><span>The citation will be sent only to ${h(officerNames)}. The cited pilots and mailing list will not receive it; the incident status and delivery ledger will remain unchanged.</span></div>` : ''}
     <div class="composer-form">
       <div class="citation-fields">
+        ${manualFields}
         <div class="field-grid">
           <label class="composer-field">
             <span>EVE Mail sender</span>
-            <select id="composer-sender" ${state.settings.senderMode === 'final-blow' ? 'disabled' : ''}>${senderOptions}</select>
+            <select id="composer-sender" ${!manual && state.settings.senderMode === 'final-blow' ? 'disabled' : ''}>${senderOptions}</select>
           </label>
           <label class="composer-field">
             <span>Short title</span>
@@ -725,7 +826,7 @@ function renderComposer() {
           </label>
           <label class="composer-field">
             <span>${isFleetAttacker ? 'Attacker' : 'Officer name'}</span>
-            <input data-draft-field="officerName" value="${h(state.draft.officerName)}" ${isFleetAttacker ? 'readonly' : ''}>
+            <input data-draft-field="officerName" value="${h(state.draft.officerName)}" ${isFleetAttacker && !manual ? 'readonly' : ''}>
           </label>
         </div>
         <div class="composer-field legal-activity-field">
@@ -799,6 +900,14 @@ function renderOffenseCheckboxes(selectedIds = []) {
 }
 
 function senderWarning(killmail, sender, group = null) {
+  if (killmail?.manualCitation) {
+    if (!sender) return '<p class="sender-warning">Choose an authorized EVE Mail sender before sending.</p>';
+    if (state.settings.testMode) return '';
+    if (!Number.isSafeInteger(Number(killmail.recipientId)) || Number(killmail.recipientId) <= 0) {
+      return '<p class="sender-warning">Find and verify the recipient pilot before sending.</p>';
+    }
+    return '';
+  }
   if (!sender && state.settings.senderMode === 'final-blow') {
     return '<p class="sender-warning">The final-blow character is not authorized in this browser. Add that character or choose a specified sender in Settings.</p>';
   }
@@ -823,11 +932,16 @@ function citationErrors(killmail, sender, citation) {
   const errors = validateCitation(state.draft);
   const mailingListId = Number(state.settings.mailingListId);
   const records = selectedKillmailGroup()?.records || [killmail];
-  if (records.some((record) => !record.detail?.victim?.character_id)) errors.push('Every bundled killmail must have a capsuleer recipient.');
-  if (records.some((record) => !record.actionable)) errors.push('Every bundled killmail must be an outbound WHPD enforcement action.');
+  if (killmail?.manualCitation) {
+    const recipientId = Number(killmail.recipientId);
+    if (!Number.isSafeInteger(recipientId) || recipientId <= 0) errors.push('Find and verify the recipient pilot before sending.');
+  } else {
+    if (records.some((record) => !record.detail?.victim?.character_id)) errors.push('Every bundled killmail must have a capsuleer recipient.');
+    if (records.some((record) => !record.actionable)) errors.push('Every bundled killmail must be an outbound WHPD enforcement action.');
+    if (records.some((record) => record.status !== 'pending')) errors.push('Restore every bundled record to pending before sending it again.');
+  }
   if (!sender) errors.push('An authorized EVE Mail sender is required.');
   if (!Number.isSafeInteger(mailingListId) || mailingListId <= 0) errors.push('A valid mailing list ID is required for live delivery.');
-  if (records.some((record) => record.status !== 'pending')) errors.push('Restore every bundled record to pending before sending it again.');
   if (citation.subject.length > 150) errors.push('The EVE Mail subject exceeds 150 characters.');
   if (citation.body.length > 8000) errors.push('The EVE Mail body exceeds 8,000 characters.');
   return errors;
@@ -837,7 +951,9 @@ function testCitationErrors(killmail, sender, citation) {
   const errors = validateCitation(state.draft);
   const group = selectedKillmailGroup() || { records: [killmail] };
   if (!sender) errors.push('An authorized EVE Mail sender is required.');
-  if (!officersForGroup(group).length) errors.push('The bundled records do not identify an involved capsuleer officer.');
+  if (!killmail?.manualCitation && !officersForGroup(group).length) {
+    errors.push('The bundled records do not identify an involved capsuleer officer.');
+  }
   if (citation.subject.length > 150) errors.push('The EVE Mail subject exceeds 150 characters.');
   if (citation.body.length > 8000) errors.push('The EVE Mail body exceeds 8,000 characters.');
   return errors;
@@ -862,7 +978,9 @@ function refreshCitationPreview() {
     ? `<ul class="validation-list">${errors.map((error) => `<li>${h(error)}</li>`).join('')}</ul>`
     : '';
   const sendButton = document.getElementById('send-citation-button');
-  const testOfficerCount = officersForGroup(selectedKillmailGroup() || { records: [killmail] }).length;
+  const testOfficerCount = killmail.manualCitation
+    ? (sender ? 1 : 0)
+    : officersForGroup(selectedKillmailGroup() || { records: [killmail] }).length;
   sendButton.disabled = errors.length > 0 || state.sending;
   sendButton.textContent = state.sendingMode === 'test'
     ? 'Sending TEST…'
@@ -894,7 +1012,9 @@ function renderHistory() {
             <td><strong>${h(entry.subject)}</strong><span>${h(entry.systemName || '')} · ${h(entry.shipName || '')}</span></td>
             <td>${h(entry.senderName)}</td>
             <td>${utcTimeElement(entry.sentAt)}</td>
-            <td>${(entry.killmailIds || [entry.killmailId]).map((killmailId) => `<a href="https://zkillboard.com/kill/${killmailId}/" target="_blank" rel="noopener noreferrer">#${killmailId}</a>`).join(' + ')}</td>
+            <td>${entry.manual || !(entry.killmailIds || [entry.killmailId]).filter(Boolean).length
+              ? '<span class="badge badge-npc">Manual</span>'
+              : (entry.killmailIds || [entry.killmailId]).filter(Boolean).map((killmailId) => `<a href="https://zkillboard.com/kill/${killmailId}/" target="_blank" rel="noopener noreferrer">#${killmailId}</a>`).join(' + ')}</td>
           </tr>
         `).join('')}
       </tbody>
@@ -1069,6 +1189,7 @@ async function importZkillRecord(event) {
     state.search = '';
     state.selectedKillmailId = killmailId;
     state.bundledIncidentIds.clear();
+    state.manualCitation = null;
     state.draft = null;
     input.value = '';
     document.getElementById('queue-search').value = '';
@@ -1109,6 +1230,7 @@ async function importZkillRecord(event) {
     state.search = '';
     state.selectedKillmailId = killmail.id;
     state.bundledIncidentIds.clear();
+    state.manualCitation = null;
     state.draft = null;
     input.value = '';
     document.getElementById('queue-search').value = '';
@@ -1235,6 +1357,65 @@ async function copyText(value, message) {
   }
 }
 
+function clearResolvedManualRecipient() {
+  if (!state.manualCitation) return;
+  state.manualCitation.recipientId = null;
+  state.manualCitation.resolvedName = '';
+  state.manualCitation.detail.victim.character_id = null;
+  const status = document.getElementById('manual-recipient-status');
+  if (status) {
+    status.classList.remove('is-verified');
+    status.textContent = 'Find the exact character before sending.';
+  }
+  const button = document.getElementById('resolve-manual-recipient');
+  if (button) {
+    button.className = 'button button-primary';
+    button.textContent = 'Find pilot';
+  }
+}
+
+async function resolveManualRecipient() {
+  const manual = state.manualCitation;
+  if (!manual || manual.resolvingRecipient) return;
+  const pilotName = cleanCitationText(state.draft?.pilotName);
+  if (!pilotName) {
+    await showAlert('Enter the recipient pilot’s exact EVE character name.', { title: 'Recipient required' });
+    document.querySelector('[data-draft-field="pilotName"]')?.focus();
+    return;
+  }
+
+  manual.resolvingRecipient = true;
+  setWorking('Finding EVE character');
+  renderComposer();
+  try {
+    const character = await esi.characterByName(pilotName);
+    if (state.manualCitation !== manual || !state.draft
+      || cleanCitationText(state.draft.pilotName).toLowerCase() !== pilotName.toLowerCase()) return;
+    manual.recipientId = character.id;
+    manual.resolvedName = character.name;
+    manual.detail.victim.character_id = character.id;
+    manual.enriched.victimName = character.name;
+    manual.enriched.victimCorporationName = character.corporationName;
+    manual.enriched.victimAllianceName = character.allianceName;
+    state.draft.pilotName = character.name;
+    state.draft.corporationName = character.corporationName || state.draft.corporationName;
+    state.draft.allianceName = character.allianceName || state.draft.allianceName;
+    showToast(`${character.name} verified as the EVE Mail recipient.`);
+  } catch (error) {
+    if (state.manualCitation !== manual) return;
+    clearResolvedManualRecipient();
+    await showAlert(error.message, { title: 'Pilot not found', tone: 'danger' });
+  } finally {
+    manual.resolvingRecipient = false;
+    if (state.manualCitation === manual) {
+      setWorking('');
+      renderComposer();
+    } else if (!state.manualCitation?.resolvingRecipient) {
+      setWorking('');
+    }
+  }
+}
+
 async function sendCitation() {
   if (state.settings.testMode) return sendTestCitation();
   const killmail = selectedKillmail();
@@ -1250,7 +1431,8 @@ async function sendCitation() {
   const mailingListId = Number(state.settings.mailingListId);
   const recipients = recipientsForGroup(group);
   const recipientIds = recipients.map((recipient) => recipient.id);
-  const recordCopy = group.records.length > 1 ? ` covering ${group.records.length} combat records` : '';
+  const manual = Boolean(killmail.manualCitation);
+  const recordCopy = !manual && group.records.length > 1 ? ` covering ${group.records.length} combat records` : '';
   const approved = await requestApproval(
     `Send this citation${recordCopy} to ${state.draft.pilotName} and mailing list #${mailingListId} from ${sender.name}?`,
     { title: 'Send citation?', confirmLabel: 'Send citation' }
@@ -1265,9 +1447,10 @@ async function sendCitation() {
     const mailId = await esi.sendCitation(sender.id, recipientIds, citation.subject, citation.body, { mailingListId });
     const sentAt = Date.now();
     const entry = {
-      id: `${killmail.id}:${sentAt}`,
-      killmailId: killmail.id,
-      killmailIds: group.records.map((record) => record.id),
+      id: manual ? `manual:${recipientIds[0]}:${sentAt}` : `${killmail.id}:${sentAt}`,
+      killmailId: manual ? null : killmail.id,
+      killmailIds: manual ? [] : group.records.map((record) => record.id),
+      manual,
       mailId: Number(mailId) || null,
       recipientId: recipientIds[0],
       recipientIds,
@@ -1282,18 +1465,21 @@ async function sendCitation() {
       shipName: state.draft.destroyedShipName,
       sentAt
     };
-    group.records.forEach((record) => {
-      record.status = state.settings.autoClearAfterSend ? 'sent' : 'pending';
-      record.lastSentAt = sentAt;
-      record.lastRecipientId = record.recipientId;
-      record.lastRecipientIds = recipientIds;
-      record.lastSenderId = sender.id;
-    });
+    if (!manual) {
+      group.records.forEach((record) => {
+        record.status = state.settings.autoClearAfterSend ? 'sent' : 'pending';
+        record.lastSentAt = sentAt;
+        record.lastRecipientId = record.recipientId;
+        record.lastRecipientIds = recipientIds;
+        record.lastSenderId = sender.id;
+      });
+    }
     await Promise.all([
       store.put('history', entry),
-      store.putMany('killmails', group.records)
+      ...(manual ? [] : [store.putMany('killmails', group.records)])
     ]);
     state.history.unshift(entry);
+    state.manualCitation = null;
     state.selectedKillmailId = null;
     state.bundledIncidentIds.clear();
     state.draft = null;
@@ -1313,7 +1499,7 @@ async function sendTestCitation() {
   const killmail = selectedKillmail();
   const group = selectedKillmailGroup() || (killmail ? { records: [killmail] } : null);
   const sender = senderFor(killmail);
-  const officers = officersForGroup(group);
+  const officers = killmail?.manualCitation ? [sender].filter(Boolean) : officersForGroup(group);
   if (!killmail || !sender || !officers.length || state.sending) return;
 
   const citation = buildCitation(state.draft);
@@ -1370,6 +1556,7 @@ async function saveSettings(event) {
   await store.setSetting('settings', state.settings);
   applyAppearance();
   document.getElementById('settings-status').textContent = 'Saved on this device.';
+  state.manualCitation = null;
   state.draft = null;
   render();
   showToast('Settings saved.');
@@ -1406,6 +1593,7 @@ async function addCustomOffense() {
   const offense = { id: customOffenseId(), classification, title, code };
   state.settings.customOffenses = [...(state.settings.customOffenses || []), offense];
   await store.setSetting('settings', state.settings);
+  state.manualCitation = null;
   state.draft = null;
   titleInput.value = '';
   codeInput.value = '';
@@ -1426,6 +1614,7 @@ async function removeCustomOffense(offenseId) {
   state.settings.customOffenses = (state.settings.customOffenses || [])
     .filter((item) => item.id !== offense.id);
   await store.setSetting('settings', state.settings);
+  state.manualCitation = null;
   state.draft = null;
   renderCustomOffenses();
   showToast(`${offense.classification} removed.`);
@@ -1448,6 +1637,7 @@ async function removeCharacter(characterId) {
   const detailedKillmails = state.killmails.filter((killmail) => killmail.detail);
   await enrichKillmails(detailedKillmails);
   await store.putMany('killmails', detailedKillmails);
+  state.manualCitation = null;
   state.draft = null;
   render();
   showToast(`${character.name} was removed from this browser.`);
@@ -1468,6 +1658,7 @@ async function clearPending() {
   await store.putMany('killmails', pending);
   state.selectedKillmailId = null;
   state.bundledIncidentIds.clear();
+  state.manualCitation = null;
   state.draft = null;
   render();
   showToast(`${pending.length} pending killmails cleared.`);
@@ -1510,6 +1701,7 @@ function bindEvents() {
       state.statusFilter = statusButton.dataset.statusFilter;
       state.selectedKillmailId = null;
       state.bundledIncidentIds.clear();
+      state.manualCitation = null;
       state.draft = null;
       renderDashboard();
       return;
@@ -1539,11 +1731,23 @@ function bindEvents() {
     if (action === 'clear-record') return setKillmailStatus('cleared');
     if (action === 'restore-record') return setKillmailStatus('pending');
     if (action === 'retry-zkill') return ensureZkillValues(selectedKillmailGroup()?.records || [selectedKillmail()].filter(Boolean), { force: true });
+    if (action === 'resolve-manual-recipient') return resolveManualRecipient();
+    if (action === 'cancel-manual-citation') {
+      state.manualCitation = null;
+      state.draft = null;
+      renderDashboard();
+      return;
+    }
     if (action === 'reset-draft') {
       const killmail = selectedKillmail();
       const group = selectedKillmailGroup() || (killmail ? { primary: killmail, records: [killmail] } : null);
       if (!group) return;
-      state.draft = createCitationDraft(group, senderFor(killmail));
+      if (killmail.manualCitation) {
+        clearResolvedManualRecipient();
+        state.draft = createManualCitationDraft(senderFor(killmail));
+      } else {
+        state.draft = createCitationDraft(group, senderFor(killmail));
+      }
       renderComposer();
       return;
     }
@@ -1557,6 +1761,7 @@ function bindEvents() {
       state.search = event.target.value;
       state.selectedKillmailId = null;
       state.bundledIncidentIds.clear();
+      state.manualCitation = null;
       state.draft = null;
       renderDashboard();
       return;
@@ -1567,6 +1772,10 @@ function bindEvents() {
     const list = event.target.dataset.draftList;
     if (field) {
       state.draft[field] = cleanCitationText(event.target.value);
+      if (field === 'pilotName' && state.manualCitation
+        && cleanCitationText(event.target.value).toLowerCase() !== String(state.manualCitation.resolvedName || '').toLowerCase()) {
+        clearResolvedManualRecipient();
+      }
       refreshCitationPreview();
     }
     if (list) {
@@ -1585,7 +1794,7 @@ function bindEvents() {
       if (!group) return;
       const attackerType = event.target.value;
       setDraftAttackerType(state.draft, attackerType, group);
-      if (attackerType === 'officer' || attackerType === 'deputy') {
+      if (!group.primary?.manualCitation && (attackerType === 'officer' || attackerType === 'deputy')) {
         const finalBlow = finalBlowAttacker(group.primary);
         const characterId = Number(group.primary?.finalBlowCharacterId || finalBlow?.character_id);
         if (Number.isSafeInteger(characterId) && characterId > 0) {
@@ -1622,7 +1831,13 @@ function bindEvents() {
     }
     if (event.target.id === 'composer-sender') {
       const sender = getCharacter(event.target.value);
-      state.settings.specifiedSenderId = sender?.id || '';
+      if (state.manualCitation) {
+        state.manualCitation.senderId = sender?.id || null;
+        state.manualCitation.finalBlowCharacterId = sender?.id || null;
+        state.manualCitation.officerCharacterId = sender?.id || null;
+      } else {
+        state.settings.specifiedSenderId = sender?.id || '';
+      }
       renderComposer();
     }
   });
@@ -1641,6 +1856,7 @@ function bindEvents() {
   });
 
   document.getElementById('sync-button').addEventListener('click', () => syncAllCharacters());
+  document.getElementById('new-citation-button').addEventListener('click', beginManualCitation);
   document.getElementById('add-character-button').addEventListener('click', () => beginLogin());
   document.getElementById('welcome-login-button').addEventListener('click', () => beginLogin());
   document.getElementById('settings-add-character-button').addEventListener('click', () => beginLogin());

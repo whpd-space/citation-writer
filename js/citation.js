@@ -584,3 +584,31 @@ export function makeCitationDraft(killmail, _deliverySender, offenseIds = DEFAUL
     })
   };
 }
+
+export function makeManualCitationDraft(officer = null, offenseIds = DEFAULT_OFFENSE_IDS, random = Math.random, customOffenses = []) {
+  const normalizedCustomOffenses = availableOffenses(customOffenses).filter((offense) => offense.custom);
+  const normalizedOffenseIds = selectedOffenses(offenseIds, normalizedCustomOffenses).map((offense) => offense.id);
+
+  return {
+    sourceKillmailIds: [],
+    title: '',
+    pilotName: '',
+    corporationName: '',
+    allianceName: '',
+    systemName: '',
+    offenseIds: normalizedOffenseIds,
+    activity: activityForOffenses(normalizedOffenseIds, normalizedCustomOffenses),
+    attackerType: 'officer',
+    officerName: cleanCitationText(officer?.name),
+    officerShipName: '',
+    destroyedShipName: '',
+    totalValue: '',
+    humor: randomLibraryEntry(HUMOR, random),
+    charges: chargesForOffenses(normalizedOffenseIds, normalizedCustomOffenses),
+    evidence: ['Officer observations were recorded and entered into evidence.'],
+    officerComments: [],
+    finalNote: randomLibraryEntry(FINAL_NOTES, random),
+    zkillUrl: '',
+    zkillRecords: []
+  };
+}

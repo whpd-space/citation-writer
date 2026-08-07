@@ -79,6 +79,17 @@ export function extractZkillKillmail(payload, expectedKillmailId = null) {
   };
 }
 
+export function extractCharacterMatch(payload, requestedName) {
+  const characters = Array.isArray(payload?.characters) ? payload.characters : [];
+  const normalizedName = String(requestedName || '').trim().toLowerCase();
+  const match = characters.find((character) => String(character?.name || '').trim().toLowerCase() === normalizedName);
+  const id = Number(match?.id);
+  if (!match || !Number.isSafeInteger(id) || id <= 0) {
+    throw new Error(`No EVE character named "${String(requestedName || '').trim()}" was found.`);
+  }
+  return { id, name: String(match.name).trim() };
+}
+
 export function buildMailRecipients(recipientIds, mailingListId = null) {
   const requestedIds = Array.isArray(recipientIds) ? recipientIds : [recipientIds];
   const normalizedRecipientIds = [...new Set(requestedIds.map(Number))];
@@ -312,6 +323,23 @@ export class ESIClient {
       if (!resolved.has(id)) resolved.set(id, `ID ${id}`);
     });
     return resolved;
+  }
+
+  async characterByName(name) {
+    const requestedName = String(name || '').trim();
+    if (!requestedName) throw new Error('Enter an EVE character name.');
+
+    const lookup = await this.request('/universe/ids', { method: 'POST', body: [requestedName] });
+    const character = extractCharacterMatch(lookup.data, requestedName);
+    const profile = (await this.request(`/characters/${character.id}`)).data || {};
+    const names = await this.resolveNames([profile.corporation_id, profile.alliance_id]);
+
+    return {
+      id: character.id,
+      name: profile.name || character.name,
+      corporationName: names.get(Number(profile.corporation_id)) || '',
+      allianceName: names.get(Number(profile.alliance_id)) || ''
+    };
   }
 
   async zkillValue(killmailId) {
