@@ -641,7 +641,7 @@ async function ensureZkillValue(killmail, { force = false, notifyFailure = true 
   if (selectedKillmailGroup()?.records.some((record) => Number(record.id) === killmailId)) renderComposer();
 
   try {
-    const totalValue = await esi.zkillValue(killmailId);
+    const totalValue = await esi.zkillValue(killmailId, killmail.hash);
     if (!totalValue) throw new Error('zKillboard did not return a total value for this killmail.');
 
     killmail.totalValue = totalValue;
