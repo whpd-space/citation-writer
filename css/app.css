@@ -489,6 +489,10 @@ a:hover {
   flex: 1;
 }
 
+#new-citation-button {
+  flex: 0 0 auto;
+}
+
 .zkill-import {
   width: min(350px, 100%);
   display: flex;
@@ -1042,6 +1046,50 @@ a:hover {
   background: var(--red-bg);
   color: var(--fg);
   font-size: 0.76rem;
+}
+
+.manual-mode-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--blue) 45%, var(--border));
+  background: color-mix(in srgb, var(--blue) 9%, var(--card));
+  color: var(--fg);
+  font-size: 0.76rem;
+}
+
+.manual-mode-notice strong {
+  flex: 0 0 auto;
+  color: var(--blue);
+  letter-spacing: 0.04em;
+}
+
+.manual-citation-fields {
+  margin-bottom: 0.8rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.manual-recipient-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: end;
+}
+
+.manual-recipient-field .composer-field {
+  margin-top: 0;
+}
+
+.manual-recipient-status {
+  margin: 0.35rem 0 0.65rem;
+  color: var(--amber);
+  font-size: 0.68rem;
+}
+
+.manual-recipient-status.is-verified {
+  color: var(--green);
 }
 
 .test-mode-notice strong {
@@ -1859,6 +1907,10 @@ code {
 @media (max-width: 520px) {
   .queue-tools {
     flex-direction: column;
+  }
+
+  #new-citation-button {
+    width: 100%;
   }
 
   .zkill-import {

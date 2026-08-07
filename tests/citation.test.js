@@ -16,11 +16,12 @@ import {
   formatShipTypeCounts,
   LEGAL_OFFENSES,
   makeCitationDraft,
+  makeManualCitationDraft,
   sortOffensesAlphabetically,
   validateCitation
 } from '../js/citation.js';
 import { APP_CONFIG } from '../js/config.js';
-import { buildMailRecipients, extractZkillKillmail, extractZkillValue, parseZkillKillmailId } from '../js/esi.js';
+import { buildMailRecipients, extractCharacterMatch, extractZkillKillmail, extractZkillValue, parseZkillKillmailId } from '../js/esi.js';
 import { formatRelativeTime, formatUtcDateTime, isoUtcDateTime } from '../js/time.js';
 import { attackerRoleForFinalBlow, classifyKillmail, combineKillmailGroups, countDistinctAttackingPilots, groupKillmails, isPodKillmail, POD_PAIR_WINDOW_MS, selectInvolvedOfficer } from '../js/killmail-groups.js';
 
@@ -149,6 +150,47 @@ test('creates a complete draft from an enriched killmail', () => {
   assert.equal(draft.activity, 'criminal trespass and theft');
   assert.ok(draft.charges.some((charge) => charge.includes('PENAL § 30.05')));
   assert.deepEqual(validateCitation(draft), []);
+});
+
+test('creates and renders a citation draft without a killmail or zKillboard evidence', () => {
+  const draft = makeManualCitationDraft(
+    { id: 456, name: 'Desk Officer' },
+    ['criminal-trespass'],
+    () => 0
+  );
+  assert.deepEqual(draft.sourceKillmailIds, []);
+  assert.deepEqual(draft.zkillRecords, []);
+  assert.equal(draft.zkillUrl, '');
+  assert.equal(draft.officerName, 'Desk Officer');
+
+  const completed = {
+    ...draft,
+    pilotName: 'Definitely Innocent',
+    corporationName: 'Totally Legal Ventures',
+    systemName: 'J123456',
+    officerShipName: 'Loki',
+    destroyedShipName: 'Venture',
+    totalValue: '42,000,000 ISK'
+  };
+  assert.deepEqual(validateCitation(completed), []);
+  const citation = buildCitation(completed);
+  assert.ok(citation.body.includes('Definitely Innocent'));
+  assert.ok(!citation.body.includes('zkillboard.com'));
+  assert.ok(!citation.body.includes('killReport:'));
+});
+
+test('matches an exact EVE character for manual citation delivery', () => {
+  const payload = {
+    characters: [
+      { id: 1001, name: 'Definitely Innocent' },
+      { id: 1002, name: 'Definitely Innocent Alt' }
+    ]
+  };
+  assert.deepEqual(extractCharacterMatch(payload, ' definitely innocent '), {
+    id: 1001,
+    name: 'Definitely Innocent'
+  });
+  assert.throws(() => extractCharacterMatch(payload, 'Definitely'), /No EVE character named/);
 });
 
 test('keeps the involved officer separate from an uninvolved EVE Mail sender', () => {
@@ -643,6 +685,17 @@ test('offers manual zKillboard link import into the local pending queue', () => 
   assert.ok(app.includes('const imported = await esi.zkillKillmail(killmailId)'));
   assert.ok(app.includes("status: 'pending'"));
   assert.ok(app.includes("store.put('killmails', killmail)"));
+});
+
+test('offers killmail-free citation composition and records manual delivery in the ledger', () => {
+  const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.ok(index.includes('id="new-citation-button"'));
+  assert.ok(app.includes('function beginManualCitation()'));
+  assert.ok(app.includes("data-action=\"resolve-manual-recipient\""));
+  assert.ok(app.includes("id: manual ? `manual:${recipientIds[0]}:${sentAt}`"));
+  assert.ok(app.includes("killmailIds: manual ? []"));
+  assert.ok(app.includes("'<span class=\"badge badge-npc\">Manual</span>'"));
 });
 
 test('uses themed modals for alerts and approvals instead of browser dialogs', () => {
