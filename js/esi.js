@@ -90,26 +90,68 @@ export function extractCharacterMatch(payload, requestedName) {
   return { id, name: String(match.name).trim() };
 }
 
-export function buildMailRecipients(recipientIds, mailingListId = null) {
+export const MAX_MAIL_RECIPIENTS = 50;
+
+function normalizedMailRecipientIds(recipientIds) {
   const requestedIds = Array.isArray(recipientIds) ? recipientIds : [recipientIds];
   const normalizedRecipientIds = [...new Set(requestedIds.map(Number))];
   if (!normalizedRecipientIds.length || normalizedRecipientIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
     throw new Error('At least one valid EVE Mail recipient ID is required.');
   }
+  return normalizedRecipientIds;
+}
+
+function normalizedMailingListId(mailingListId) {
+  if (mailingListId === null || mailingListId === undefined || mailingListId === '') return null;
+  const normalized = Number(mailingListId);
+  if (!Number.isSafeInteger(normalized) || normalized <= 0) {
+    throw new Error('A valid EVE Mail mailing list ID is required.');
+  }
+  return normalized;
+}
+
+export function buildMailRecipients(recipientIds, mailingListId = null) {
+  const normalizedRecipientIds = normalizedMailRecipientIds(recipientIds);
+  const normalizedMailingList = normalizedMailingListId(mailingListId);
 
   const recipients = normalizedRecipientIds.map((recipientId) => ({
     recipient_id: recipientId,
     recipient_type: 'character'
   }));
-  if (mailingListId !== null && mailingListId !== undefined && mailingListId !== '') {
-    const normalizedMailingListId = Number(mailingListId);
-    if (!Number.isSafeInteger(normalizedMailingListId) || normalizedMailingListId <= 0) {
-      throw new Error('A valid EVE Mail mailing list ID is required.');
-    }
-    recipients.push({ recipient_id: normalizedMailingListId, recipient_type: 'mailing_list' });
+  if (normalizedMailingList !== null) {
+    recipients.push({ recipient_id: normalizedMailingList, recipient_type: 'mailing_list' });
+  }
+  if (recipients.length > MAX_MAIL_RECIPIENTS) {
+    throw new Error(`EVE Mail supports at most ${MAX_MAIL_RECIPIENTS} recipients per message.`);
   }
 
   return recipients;
+}
+
+export function buildMailRecipientBatches(recipientIds, mailingListId = null) {
+  const normalizedRecipientIds = normalizedMailRecipientIds(recipientIds);
+  const normalizedMailingList = normalizedMailingListId(mailingListId);
+  const batches = [];
+  let offset = 0;
+
+  if (normalizedMailingList !== null) {
+    const firstBatchSize = MAX_MAIL_RECIPIENTS - 1;
+    batches.push({
+      recipientIds: normalizedRecipientIds.slice(0, firstBatchSize),
+      mailingListId: normalizedMailingList
+    });
+    offset = firstBatchSize;
+  }
+
+  while (offset < normalizedRecipientIds.length) {
+    batches.push({
+      recipientIds: normalizedRecipientIds.slice(offset, offset + MAX_MAIL_RECIPIENTS),
+      mailingListId: null
+    });
+    offset += MAX_MAIL_RECIPIENTS;
+  }
+
+  return batches;
 }
 
 export class ESIError extends Error {
@@ -420,5 +462,23 @@ export class ESIClient {
       }
     });
     return response.data;
+  }
+
+  async sendCitationCopies(senderId, recipientIds, subject, body, { mailingListId = null } = {}) {
+    const batches = buildMailRecipientBatches(recipientIds, mailingListId);
+    const mailIds = [];
+    for (const batch of batches) {
+      try {
+        mailIds.push(await this.sendCitation(senderId, batch.recipientIds, subject, body, {
+          mailingListId: batch.mailingListId
+        }));
+      } catch (error) {
+        if (mailIds.length) {
+          throw new Error(`${mailIds.length} of ${batches.length} EVE Mail batches were sent before delivery failed: ${error.message}`);
+        }
+        throw error;
+      }
+    }
+    return mailIds;
   }
 }

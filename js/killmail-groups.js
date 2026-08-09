@@ -29,7 +29,7 @@ export function selectInvolvedOfficer(attackers, managedCharacterIds) {
     || null;
 }
 
-export function countDistinctAttackingPilots(killmails) {
+export function distinctAttackingPilotIds(killmails) {
   const characterIds = new Set();
   for (const killmail of killmails || []) {
     for (const attacker of killmail?.detail?.attackers || []) {
@@ -37,7 +37,21 @@ export function countDistinctAttackingPilots(killmails) {
       if (Number.isSafeInteger(characterId) && characterId > 0) characterIds.add(characterId);
     }
   }
-  return characterIds.size;
+  return [...characterIds];
+}
+
+export function countDistinctAttackingPilots(killmails) {
+  return distinctAttackingPilotIds(killmails).length;
+}
+
+export function citationDeliveryRecipientIds(killmails, citedRecipientIds, attackerType) {
+  const recipientIds = (citedRecipientIds || [])
+    .map(Number)
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+  if (attackerType === 'fleet' || attackerType === 'memefleet') {
+    recipientIds.push(...distinctAttackingPilotIds(killmails));
+  }
+  return [...new Set(recipientIds)];
 }
 
 export function attackerRoleForFinalBlow(killmail, rememberedRoles = {}) {

@@ -23,9 +23,10 @@ Open the app at [cw.whpd.space](https://cw.whpd.space).
 - Provides the full WHPD Legal Library as an alphabetical checklist.
 - Supports your own custom misdemeanors and felonies.
 - Supports Officer, Deputy, Fleet, and Memefleet attribution.
+- Sends Fleet and Memefleet citation copies to every involved capsuleer attacker.
 - Can send from the final-blow character or a designated character.
 - Sends live citations to the configured mailing list.
-- Provides TEST mode for sending citations only to the involved officers.
+- Provides TEST mode for sending citations only to the involved officers or fleet participants.
 - Tracks sent and cleared records in a local ledger.
 - Displays all dates and times in UTC.
 - Offers dark, light, and system themes with centered or full-width layouts.
