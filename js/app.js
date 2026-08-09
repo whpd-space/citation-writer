@@ -14,7 +14,7 @@ import {
   validateCitation
 } from './citation.js';
 import { formatRelativeTime, formatUtcDateTime, isoUtcDateTime } from './time.js';
-import { attackerRoleForFinalBlow, classifyKillmail, combineKillmailGroups, countDistinctAttackingPilots, groupKillmails, isPodKillmail, selectInvolvedOfficer } from './killmail-groups.js';
+import { attackerRoleForFinalBlow, citationDeliveryRecipientIds, classifyKillmail, combineKillmailGroups, countDistinctAttackingPilots, distinctAttackingPilotIds, groupKillmails, isPodKillmail, selectInvolvedOfficer } from './killmail-groups.js';
 
 if (window.location.hostname === '127.0.0.1') {
   window.location.replace(`http://localhost:${window.location.port}${window.location.pathname}${window.location.search}${window.location.hash}`);
@@ -240,6 +240,18 @@ function recipientsForGroup(group) {
     });
   }
   return [...recipients.values()];
+}
+
+function isFleetAttackerType(attackerType) {
+  return attackerType === 'fleet' || attackerType === 'memefleet';
+}
+
+function deliveryRecipientIdsForGroup(group, attackerType) {
+  return citationDeliveryRecipientIds(
+    group?.records,
+    recipientsForGroup(group).map((recipient) => recipient.id),
+    attackerType
+  );
 }
 
 function citationKillmail(group) {
@@ -710,12 +722,15 @@ function renderComposer() {
     ? (state.draft.pilotName || 'New manual citation')
     : (groupedKillmail.enriched?.victimName || 'Unknown pilot');
   const groupOfficers = manual ? [sender].filter(Boolean) : officersForGroup(group);
-  const officerNames = formatNameList(groupOfficers.map((officer) => officer.name), 'the involved officer');
   const groupKey = group.records.map((record) => Number(record.id)).join(':');
   const draftKey = (state.draft?.sourceKillmailIds || []).map(Number).join(':');
   if (!manual && (!state.draft || draftKey !== groupKey)) state.draft = createCitationDraft(group, sender);
   const attackerType = state.draft.attackerType || 'officer';
-  const isFleetAttacker = attackerType === 'fleet' || attackerType === 'memefleet';
+  const isFleetAttacker = isFleetAttackerType(attackerType);
+  const officerNames = formatNameList(groupOfficers.map((officer) => officer.name), 'the involved officer');
+  const testRecipientSummary = isFleetAttacker && !manual
+    ? `${distinctAttackingPilotIds(group.records).length} involved ${attackerType === 'memefleet' ? 'memefleet' : 'fleet'} participants`
+    : officerNames;
 
   const statusAction = manual
     ? '<button type="button" class="button button-secondary button-small" data-action="cancel-manual-citation">Cancel</button>'
@@ -794,7 +809,7 @@ function renderComposer() {
       )}
       ${recordFact(group.records.every((record) => record.valueSource === 'zkillboard') ? 'zKill appraisal' : 'Total value', appraisalValue)}
     </div>`}
-    ${state.settings.testMode ? `<div class="test-mode-notice"><strong>TEST mode</strong><span>The citation will be sent only to ${h(officerNames)}. The cited pilots and mailing list will not receive it; the incident status and delivery ledger will remain unchanged.</span></div>` : ''}
+    ${state.settings.testMode ? `<div class="test-mode-notice"><strong>TEST mode</strong><span>The citation will be sent only to ${h(testRecipientSummary)}. The mailing list and any cited pilots outside that group will not receive it; the incident status and delivery ledger will remain unchanged.</span></div>` : ''}
     <div class="composer-form">
       <div class="citation-fields">
         ${manualFields}
@@ -951,7 +966,11 @@ function testCitationErrors(killmail, sender, citation) {
   const errors = validateCitation(state.draft);
   const group = selectedKillmailGroup() || { records: [killmail] };
   if (!sender) errors.push('An authorized EVE Mail sender is required.');
-  if (!killmail?.manualCitation && !officersForGroup(group).length) {
+  if (!killmail?.manualCitation && isFleetAttackerType(state.draft?.attackerType)) {
+    if (!distinctAttackingPilotIds(group.records).length) {
+      errors.push('The bundled records do not identify an involved capsuleer fleet participant.');
+    }
+  } else if (!killmail?.manualCitation && !officersForGroup(group).length) {
     errors.push('The bundled records do not identify an involved capsuleer officer.');
   }
   if (citation.subject.length > 150) errors.push('The EVE Mail subject exceeds 150 characters.');
@@ -978,13 +997,18 @@ function refreshCitationPreview() {
     ? `<ul class="validation-list">${errors.map((error) => `<li>${h(error)}</li>`).join('')}</ul>`
     : '';
   const sendButton = document.getElementById('send-citation-button');
-  const testOfficerCount = killmail.manualCitation
+  const fleetTest = !killmail.manualCitation && isFleetAttackerType(state.draft?.attackerType);
+  const testRecipientCount = fleetTest
+    ? distinctAttackingPilotIds((selectedKillmailGroup() || { records: [killmail] }).records).length
+    : (killmail.manualCitation
     ? (sender ? 1 : 0)
-    : officersForGroup(selectedKillmailGroup() || { records: [killmail] }).length;
+    : officersForGroup(selectedKillmailGroup() || { records: [killmail] }).length);
   sendButton.disabled = errors.length > 0 || state.sending;
   sendButton.textContent = state.sendingMode === 'test'
     ? 'Sending TEST…'
-    : (state.sendingMode === 'citation' ? 'Sending…' : (state.settings.testMode ? `Send TEST to ${testOfficerCount === 1 ? 'officer' : 'officers'}` : 'Send citation'));
+    : (state.sendingMode === 'citation' ? 'Sending…' : (state.settings.testMode
+        ? `Send TEST to ${fleetTest ? `${testRecipientCount} participants` : (testRecipientCount === 1 ? 'officer' : 'officers')}`
+        : 'Send citation'));
 }
 
 function renderHistory() {
@@ -1431,10 +1455,17 @@ async function sendCitation() {
   const mailingListId = Number(state.settings.mailingListId);
   const recipients = recipientsForGroup(group);
   const recipientIds = recipients.map((recipient) => recipient.id);
+  const deliveryRecipientIds = deliveryRecipientIdsForGroup(group, state.draft.attackerType);
+  const citedRecipientIds = new Set(recipientIds);
+  const copyRecipientIds = deliveryRecipientIds.filter((recipientId) => !citedRecipientIds.has(recipientId));
   const manual = Boolean(killmail.manualCitation);
   const recordCopy = !manual && group.records.length > 1 ? ` covering ${group.records.length} combat records` : '';
+  const fleetLabel = state.draft.attackerType === 'memefleet' ? 'memefleet' : 'fleet';
+  const copyDestination = copyRecipientIds.length
+    ? `, ${copyRecipientIds.length} involved ${fleetLabel} ${copyRecipientIds.length === 1 ? 'participant' : 'participants'},`
+    : '';
   const approved = await requestApproval(
-    `Send this citation${recordCopy} to ${state.draft.pilotName} and mailing list #${mailingListId} from ${sender.name}?`,
+    `Send this citation${recordCopy} to ${state.draft.pilotName}${copyDestination} and mailing list #${mailingListId} from ${sender.name}?`,
     { title: 'Send citation?', confirmLabel: 'Send citation' }
   );
   if (!approved) return;
@@ -1444,16 +1475,18 @@ async function sendCitation() {
   setWorking('Sending citation');
   refreshCitationPreview();
   try {
-    const mailId = await esi.sendCitation(sender.id, recipientIds, citation.subject, citation.body, { mailingListId });
+    const mailIds = await esi.sendCitationCopies(sender.id, deliveryRecipientIds, citation.subject, citation.body, { mailingListId });
     const sentAt = Date.now();
     const entry = {
       id: manual ? `manual:${recipientIds[0]}:${sentAt}` : `${killmail.id}:${sentAt}`,
       killmailId: manual ? null : killmail.id,
       killmailIds: manual ? [] : group.records.map((record) => record.id),
       manual,
-      mailId: Number(mailId) || null,
+      mailId: Number(mailIds[0]) || null,
+      mailIds: mailIds.map(Number).filter(Number.isFinite),
       recipientId: recipientIds[0],
       recipientIds,
+      copyRecipientIds,
       recipientName: state.draft.pilotName,
       recipientNames: recipients.map((recipient) => recipient.name),
       recipientCorporationName: state.draft.corporationName,
@@ -1471,6 +1504,7 @@ async function sendCitation() {
         record.lastSentAt = sentAt;
         record.lastRecipientId = record.recipientId;
         record.lastRecipientIds = recipientIds;
+        record.lastCopyRecipientIds = copyRecipientIds;
         record.lastSenderId = sender.id;
       });
     }
@@ -1483,10 +1517,10 @@ async function sendCitation() {
     state.selectedKillmailId = null;
     state.bundledIncidentIds.clear();
     state.draft = null;
-    showToast(`Citation sent to ${entry.recipientName} and mailing list #${mailingListId} from ${entry.senderName}.`);
+    showToast(`Citation sent to ${entry.recipientName}${copyDestination} and mailing list #${mailingListId} from ${entry.senderName}.`);
   } catch (error) {
     console.error(error);
-    await showAlert(`Citation was not sent: ${error.message}`, { title: 'Delivery failed', tone: 'danger' });
+    await showAlert(`Citation delivery failed: ${error.message}`, { title: 'Delivery failed', tone: 'danger' });
   } finally {
     state.sending = false;
     state.sendingMode = null;
@@ -1500,7 +1534,11 @@ async function sendTestCitation() {
   const group = selectedKillmailGroup() || (killmail ? { records: [killmail] } : null);
   const sender = senderFor(killmail);
   const officers = killmail?.manualCitation ? [sender].filter(Boolean) : officersForGroup(group);
-  if (!killmail || !sender || !officers.length || state.sending) return;
+  const fleetTest = !killmail?.manualCitation && isFleetAttackerType(state.draft?.attackerType);
+  const recipientIds = fleetTest
+    ? distinctAttackingPilotIds(group?.records)
+    : officers.map((officer) => officer.id);
+  if (!killmail || !sender || !recipientIds.length || state.sending) return;
 
   const citation = buildCitation(state.draft);
   const errors = testCitationErrors(killmail, sender, citation);
@@ -1508,9 +1546,11 @@ async function sendTestCitation() {
     await showAlert(errors[0], { title: 'Test citation not ready' });
     return;
   }
-  const officerNames = formatNameList(officers.map((officer) => officer.name));
+  const recipientDescription = fleetTest
+    ? `${recipientIds.length} involved ${state.draft.attackerType === 'memefleet' ? 'memefleet' : 'fleet'} participants`
+    : formatNameList(officers.map((officer) => officer.name));
   const approved = await requestApproval(
-    `Send a test copy of this citation to ${officerNames} from ${sender.name}? The combat records will remain unchanged.`,
+    `Send a test copy of this citation to ${recipientDescription} from ${sender.name}? The combat records will remain unchanged.`,
     { title: 'Send test citation?', confirmLabel: 'Send test' }
   );
   if (!approved) return;
@@ -1520,11 +1560,11 @@ async function sendTestCitation() {
   setWorking('Sending test citation');
   refreshCitationPreview();
   try {
-    await esi.sendCitation(sender.id, officers.map((officer) => officer.id), citation.subject, citation.body);
-    showToast(`Test citation sent to ${officerNames} from ${sender.name}.`);
+    await esi.sendCitationCopies(sender.id, recipientIds, citation.subject, citation.body);
+    showToast(`Test citation sent to ${recipientDescription} from ${sender.name}.`);
   } catch (error) {
     console.error(error);
-    await showAlert(`Test citation was not sent: ${error.message}`, { title: 'Test delivery failed', tone: 'danger' });
+    await showAlert(`Test citation delivery failed: ${error.message}`, { title: 'Test delivery failed', tone: 'danger' });
   } finally {
     state.sending = false;
     state.sendingMode = null;

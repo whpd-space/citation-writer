@@ -21,9 +21,9 @@ import {
   validateCitation
 } from '../js/citation.js';
 import { APP_CONFIG } from '../js/config.js';
-import { buildMailRecipients, ESIClient, extractCharacterMatch, extractZkillKillmail, extractZkillValue, parseZkillKillmailId } from '../js/esi.js';
+import { buildMailRecipientBatches, buildMailRecipients, ESIClient, extractCharacterMatch, extractZkillKillmail, extractZkillValue, MAX_MAIL_RECIPIENTS, parseZkillKillmailId } from '../js/esi.js';
 import { formatRelativeTime, formatUtcDateTime, isoUtcDateTime } from '../js/time.js';
-import { attackerRoleForFinalBlow, classifyKillmail, combineKillmailGroups, countDistinctAttackingPilots, groupKillmails, isPodKillmail, POD_PAIR_WINDOW_MS, selectInvolvedOfficer } from '../js/killmail-groups.js';
+import { attackerRoleForFinalBlow, citationDeliveryRecipientIds, classifyKillmail, combineKillmailGroups, countDistinctAttackingPilots, distinctAttackingPilotIds, groupKillmails, isPodKillmail, POD_PAIR_WINDOW_MS, selectInvolvedOfficer } from '../js/killmail-groups.js';
 
 const completeDraft = {
   title: 'Permit inspection in J123456',
@@ -70,7 +70,7 @@ test('builds the exact subject prefix and required ordered sections', () => {
   const narrativeText = citation.body.split('\n\n===')[0].replace(/<[^>]+>/g, '');
   assert.ok(narrativeText.includes('Pilot Definitely Innocent of Totally Legal Ventures, operating under Nothing Suspicious'));
   assert.ok(narrativeText.includes('was detained in J123456 while conducting criminal trespass and theft'));
-  assert.ok(narrativeText.includes('Officer Example arrived in Loki'));
+  assert.ok(narrativeText.includes('Officer Example arrived in their Loki'));
   assert.ok(!narrativeText.includes('Officer Officer Example'));
 });
 
@@ -255,7 +255,11 @@ test('counts distinct capsuleer attackers and auto-selects deputies by final-blo
     { detail: { attackers: [{ character_id: 10 }, { character_id: 20 }, { corporation_id: 30 }] } },
     { detail: { attackers: [{ character_id: 20 }, { character_id: 40, final_blow: true, corporation_id: 98653604 }] } }
   ];
+  assert.deepEqual(distinctAttackingPilotIds(records), [10, 20, 40]);
   assert.equal(countDistinctAttackingPilots(records), 3);
+  assert.deepEqual(citationDeliveryRecipientIds(records, [9001], 'officer'), [9001]);
+  assert.deepEqual(citationDeliveryRecipientIds(records, [9001], 'fleet'), [9001, 10, 20, 40]);
+  assert.deepEqual(citationDeliveryRecipientIds(records, [9001, 10], 'memefleet'), [9001, 10, 20, 40]);
   assert.equal(attackerRoleForFinalBlow(records[1]), 'deputy');
   assert.equal(attackerRoleForFinalBlow(records[1], { 40: 'officer' }), 'officer');
   assert.equal(attackerRoleForFinalBlow({ detail: { attackers: [{ character_id: 50, final_blow: true, corporation_id: 123 }] } }), 'officer');
@@ -425,6 +429,38 @@ test('adds the configured mailing list to live mail while character-only mail re
     { recipient_id: 145225352, recipient_type: 'mailing_list' }
   ]);
   assert.throws(() => buildMailRecipients(90000001, 'invalid'), /valid EVE Mail mailing list ID/);
+});
+
+test('batches large fleet deliveries within the EVE Mail recipient limit and includes the mailing list once', () => {
+  const recipientIds = Array.from({ length: 100 }, (_, index) => 90000001 + index);
+  const batches = buildMailRecipientBatches(recipientIds, 145225352);
+
+  assert.equal(MAX_MAIL_RECIPIENTS, 50);
+  assert.deepEqual(batches.map((batch) => batch.recipientIds.length), [49, 50, 1]);
+  assert.deepEqual(batches.map((batch) => batch.mailingListId), [145225352, null, null]);
+  assert.equal(new Set(batches.flatMap((batch) => batch.recipientIds)).size, 100);
+  assert.throws(
+    () => buildMailRecipients(recipientIds.slice(0, 50), 145225352),
+    /at most 50 recipients/
+  );
+});
+
+test('sends every fleet delivery batch and returns each EVE Mail ID', async () => {
+  const client = new ESIClient(null);
+  const calls = [];
+  client.sendCitation = async (senderId, recipientIds, subject, body, options) => {
+    calls.push({ senderId, recipientIds, subject, body, options });
+    return 7000 + calls.length;
+  };
+
+  const recipientIds = Array.from({ length: 51 }, (_, index) => 90000101 + index);
+  const mailIds = await client.sendCitationCopies(123, recipientIds, 'Fleet citation', 'Citation body', {
+    mailingListId: 145225352
+  });
+
+  assert.deepEqual(mailIds, [7001, 7002]);
+  assert.deepEqual(calls.map((call) => call.recipientIds.length), [49, 2]);
+  assert.deepEqual(calls.map((call) => call.options.mailingListId), [145225352, null]);
 });
 
 test('reads total value from the zKillboard killID response shape', () => {

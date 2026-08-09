@@ -132,7 +132,7 @@ function openingNarrative(data) {
     parts.push(white(' arrived and dismantled the suspect\'s '));
   } else {
     parts.push(
-      white(' arrived in '),
+      white(' arrived in their '),
       white(data.officerShipName),
       white(' and dismantled the suspect\'s ')
     );
