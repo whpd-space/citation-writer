@@ -163,6 +163,15 @@ export class ESIError extends Error {
   }
 }
 
+export function isInvalidCharacterGrant(error) {
+  const errorCode = String(error?.payload?.error || '').trim().toLowerCase();
+  const message = String(error?.message || '').trim().toLowerCase();
+  return errorCode === 'invalid_grant'
+    || message.includes('invalid refresh token')
+    || message.includes('character grant missing/expired')
+    || message.includes('has no refresh token');
+}
+
 export class ESIClient {
   constructor(store) {
     this.store = store;
