@@ -33,6 +33,7 @@ import { APP_CONFIG } from '../js/config.js';
 import { buildMailRecipientBatches, buildMailRecipients, ESIClient, extractCharacterMatch, extractZkillKillmail, extractZkillValue, MAX_MAIL_RECIPIENTS, parseZkillKillmailId } from '../js/esi.js';
 import { formatRelativeTime, formatUtcDateTime, isoUtcDateTime } from '../js/time.js';
 import { attackerRoleForFinalBlow, citationDeliveryRecipientIds, classifyKillmail, combineKillmailGroups, countDistinctAttackingPilots, distinctAttackingPilotIds, groupKillmails, isPodKillmail, POD_PAIR_WINDOW_MS, selectInvolvedOfficer } from '../js/killmail-groups.js';
+import { BACKUP_FORMAT, BACKUP_VERSION, backupCounts, createBackup, parseBackup } from '../js/backup.js';
 
 const completeDraft = {
   title: 'Permit inspection in J123456',
@@ -553,6 +554,87 @@ test('exposes TEST delivery as a persistent setting instead of a separate send a
   assert.ok(app.includes('testMode: false'));
   assert.ok(app.includes('if (state.settings.testMode) return sendTestCitation();'));
   assert.ok(!app.includes('data-action="send-test-citation"'));
+});
+
+test('round trips all portable local data while excluding SSO credentials', () => {
+  const stores = {
+    characters: [{ id: 90000001, name: 'Officer Example', accessToken: 'access', refreshToken: 'refresh' }],
+    killmails: [{ id: 123, status: 'sent', detail: { victim: {}, attackers: [] } }],
+    history: [{ id: '123:456', killmailId: 123, subject: 'Citation Issued' }],
+    names: [{ id: 90000002, name: 'Definitely Innocent', category: 'character' }],
+    kv: [{ key: 'settings', value: { theme: 'dark', citationTemplates: [{ id: 'custom' }] } }]
+  };
+
+  const created = createBackup(stores, new Date('2026-08-11T12:34:56Z'));
+  const restored = parseBackup(JSON.stringify(created));
+
+  assert.equal(restored.format, BACKUP_FORMAT);
+  assert.equal(restored.version, BACKUP_VERSION);
+  assert.equal(restored.exportedAt, '2026-08-11T12:34:56.000Z');
+  assert.equal(restored.credentialsIncluded, false);
+  assert.deepEqual(restored.excluded, ['eve-sso-credentials']);
+  assert.deepEqual(restored.stores, { ...stores, characters: [] });
+  assert.ok(!JSON.stringify(created).includes('access'));
+  assert.ok(!JSON.stringify(created).includes('refresh'));
+  assert.deepEqual(backupCounts(restored), {
+    characters: 0,
+    killmails: 1,
+    history: 1,
+    names: 1,
+    settings: 1
+  });
+});
+
+test('rejects malformed, incomplete, duplicate, and future-version backups before import', () => {
+  const emptyStores = { characters: [], killmails: [], history: [], names: [], kv: [] };
+  const valid = createBackup(emptyStores, new Date('2026-08-11T12:34:56Z'));
+
+  assert.throws(() => parseBackup('not json'), /not valid JSON/);
+  assert.throws(() => parseBackup(JSON.stringify({ ...valid, format: 'something-else' })), /not a WHPD Citation Writer backup/);
+  assert.throws(() => parseBackup(JSON.stringify({ ...valid, version: BACKUP_VERSION + 1 })), /not supported/);
+  assert.throws(
+    () => parseBackup(JSON.stringify({ ...valid, stores: { ...emptyStores, history: undefined } })),
+    /history.*must be an array/
+  );
+  assert.throws(
+    () => parseBackup(JSON.stringify({ ...valid, stores: { ...emptyStores, killmails: [{ id: 123 }, { id: 123 }] } })),
+    /duplicate key/
+  );
+  assert.throws(
+    () => parseBackup(JSON.stringify({
+      ...valid,
+      stores: { ...emptyStores, kv: [{ key: 'settings', value: { citationTemplates: 'not-an-array' } }] }
+    })),
+    /malformed app settings/
+  );
+  assert.throws(
+    () => parseBackup(JSON.stringify({
+      ...valid,
+      credentialsIncluded: true,
+      stores: { ...emptyStores, characters: [{ id: 90000001, name: 'Unsafe', refreshToken: 'secret' }] }
+    })),
+    /SSO credentials cannot be imported/
+  );
+});
+
+test('wires complete backup and restore controls into Settings', () => {
+  const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  const database = readFileSync(new URL('../js/db.js', import.meta.url), 'utf8');
+
+  assert.ok(index.includes('id="export-all-data-button"'));
+  assert.ok(index.includes('id="import-all-data-input"'));
+  assert.ok(index.includes('<span>Export</span>'));
+  assert.ok(index.includes('<span>Import</span>'));
+  assert.ok(index.includes('class="button-icon"'));
+  assert.ok(index.includes('SSO credentials are never included'));
+  assert.ok(app.includes('createBackup(await store.snapshot())'));
+  assert.ok(app.includes('await store.replaceAll(backup.stores)'));
+  assert.ok(database.includes("'characters',"));
+  assert.ok(database.includes("'killmails',"));
+  assert.ok(database.includes("'history',"));
+  assert.ok(database.includes("'names',"));
+  assert.ok(database.includes("'kv'"));
 });
 
 test('adds the configured mailing list to live mail while character-only mail remains available for TEST mode', () => {

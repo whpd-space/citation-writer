@@ -1,3 +1,5 @@
+import { BACKUP_STORE_NAMES } from './backup.js';
+
 const DB_NAME = 'whpd-citation-writer';
 const DB_VERSION = 1;
 
@@ -114,6 +116,31 @@ export class WHPDStore {
 
   async setSetting(key, value) {
     return this.put('kv', { key, value });
+  }
+
+  async snapshot() {
+    const database = await this.open();
+    const transaction = database.transaction(BACKUP_STORE_NAMES, 'readonly');
+    const done = transactionDone(transaction);
+    const values = await Promise.all(BACKUP_STORE_NAMES.map((storeName) => (
+      requestResult(transaction.objectStore(storeName).getAll())
+    )));
+    await done;
+    return Object.fromEntries(BACKUP_STORE_NAMES.map((storeName, index) => [storeName, values[index]]));
+  }
+
+  async replaceAll(stores) {
+    const database = await this.open();
+    const transaction = database.transaction(BACKUP_STORE_NAMES, 'readwrite');
+    const done = transactionDone(transaction);
+
+    BACKUP_STORE_NAMES.forEach((storeName) => {
+      const objectStore = transaction.objectStore(storeName);
+      objectStore.clear();
+      stores[storeName].forEach((record) => objectStore.put(record));
+    });
+
+    await done;
   }
 
   async destroy() {
