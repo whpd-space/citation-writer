@@ -1,5 +1,5 @@
 import { WHPDStore } from './db.js';
-import { ESIClient, parseZkillKillmailId } from './esi.js';
+import { ESIClient, isInvalidCharacterGrant, parseZkillKillmailId } from './esi.js';
 import { backupCounts, createBackup, parseBackup } from './backup.js';
 import {
   activityForOffenses,
@@ -1310,11 +1310,13 @@ async function syncAllCharacters({ quiet = false } = {}) {
   setWorking('Starting intake');
   const descriptors = new Map();
   const failures = [];
+  const removedAuthorizations = [];
+  const charactersToSync = [...state.characters];
 
   try {
-    for (let characterIndex = 0; characterIndex < state.characters.length; characterIndex += 1) {
-      const character = state.characters[characterIndex];
-      setWorking(`Syncing ${characterIndex + 1}/${state.characters.length}`);
+    for (let characterIndex = 0; characterIndex < charactersToSync.length; characterIndex += 1) {
+      const character = charactersToSync[characterIndex];
+      setWorking(`Syncing ${characterIndex + 1}/${charactersToSync.length}`);
       try {
         for (let page = 1; page <= Number(state.settings.pageCount); page += 1) {
           const response = await esi.recentKillmails(character.id, page);
@@ -1333,7 +1335,17 @@ async function syncAllCharacters({ quiet = false } = {}) {
         }
       } catch (error) {
         console.error(error);
-        failures.push(`${character.name}: ${error.message}`);
+        if (isInvalidCharacterGrant(error)) {
+          await store.delete('characters', character.id);
+          state.characters = state.characters.filter((item) => Number(item.id) !== Number(character.id));
+          if (Number(state.settings.specifiedSenderId) === Number(character.id)) {
+            state.settings.specifiedSenderId = state.characters[0]?.id || '';
+            await store.setSetting('settings', state.settings);
+          }
+          removedAuthorizations.push(character.name);
+        } else {
+          failures.push(`${character.name}: ${error.message}`);
+        }
       }
     }
 
@@ -1381,10 +1393,14 @@ async function syncAllCharacters({ quiet = false } = {}) {
     if (!quiet) {
       showToast(`Intake complete. ${descriptors.size} unique combat ${descriptors.size === 1 ? 'record' : 'records'} reviewed.`);
     }
-    if (failures.length) await showAlert(
-      `Some characters could not sync:\n${failures.join('\n')}`,
-      { title: 'Intake incomplete' }
-    );
+    if (failures.length || removedAuthorizations.length) {
+      const notices = [];
+      if (removedAuthorizations.length) {
+        notices.push(`Authorization expired and was removed for: ${removedAuthorizations.join(', ')}. Add ${removedAuthorizations.length === 1 ? 'this character' : 'these characters'} again in Settings.`);
+      }
+      if (failures.length) notices.push(`Some characters could not sync:\n${failures.join('\n')}`);
+      await showAlert(notices.join('\n\n'), { title: 'Intake incomplete' });
+    }
   } finally {
     state.syncing = false;
     setWorking('');

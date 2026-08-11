@@ -30,7 +30,7 @@ import {
   validateCitation
 } from '../js/citation.js';
 import { APP_CONFIG } from '../js/config.js';
-import { buildMailRecipientBatches, buildMailRecipients, ESIClient, extractCharacterMatch, extractZkillKillmail, extractZkillValue, MAX_MAIL_RECIPIENTS, parseZkillKillmailId } from '../js/esi.js';
+import { buildMailRecipientBatches, buildMailRecipients, ESIClient, extractCharacterMatch, extractZkillKillmail, extractZkillValue, isInvalidCharacterGrant, MAX_MAIL_RECIPIENTS, parseZkillKillmailId } from '../js/esi.js';
 import { formatRelativeTime, formatUtcDateTime, isoUtcDateTime } from '../js/time.js';
 import { attackerRoleForFinalBlow, citationDeliveryRecipientIds, classifyKillmail, combineKillmailGroups, countDistinctAttackingPilots, distinctAttackingPilotIds, groupKillmails, isPodKillmail, POD_PAIR_WINDOW_MS, selectInvolvedOfficer } from '../js/killmail-groups.js';
 import { BACKUP_FORMAT, BACKUP_VERSION, backupCounts, createBackup, parseBackup } from '../js/backup.js';
@@ -554,6 +554,19 @@ test('exposes TEST delivery as a persistent setting instead of a separate send a
   assert.ok(app.includes('testMode: false'));
   assert.ok(app.includes('if (state.settings.testMode) return sendTestCitation();'));
   assert.ok(!app.includes('data-action="send-test-citation"'));
+});
+
+test('recognizes expired character authorization errors that require local removal', () => {
+  assert.equal(isInvalidCharacterGrant({
+    message: 'Invalid refresh token. Character grant missing/expired.',
+    payload: { error: 'invalid_grant' }
+  }), true);
+  assert.equal(isInvalidCharacterGrant({ message: 'Officer Example has no refresh token. Add the character again.' }), true);
+  assert.equal(isInvalidCharacterGrant({ message: 'ESI rate limit reached.', payload: { error: 'rate_limited' } }), false);
+
+  const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.ok(app.includes("await store.delete('characters', character.id)"));
+  assert.ok(app.includes('Authorization expired and was removed for:'));
 });
 
 test('round trips all portable local data while excluding SSO credentials', () => {
