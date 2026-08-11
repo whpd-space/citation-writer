@@ -2,14 +2,21 @@ import { WHPDStore } from './db.js';
 import { ESIClient, parseZkillKillmailId } from './esi.js';
 import {
   activityForOffenses,
+  applyCitationTemplate,
   availableOffenses,
   buildCitation,
+  citationTemplateUsesOffenses,
+  citationTemplates,
   chargesForOffenses,
   cleanCitationText,
+  DEFAULT_CITATION_TEMPLATE_ID,
+  findCitationTemplate,
   formatIsk,
   formatShipTypeCounts,
+  isProtectedCitationTemplateId,
   makeCitationDraft,
   makeManualCitationDraft,
+  normalizeCitationTemplate,
   sortOffensesAlphabetically,
   validateCitation
 } from './citation.js';
@@ -33,6 +40,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   layoutWidth: 'contained',
   attackerRoles: {},
   customOffenses: [],
+  citationTemplateId: DEFAULT_CITATION_TEMPLATE_ID,
+  citationTemplates: [],
   pageCount: 2
 });
 
@@ -56,7 +65,9 @@ const state = {
   sendingMode: null,
   zkbLoadingIds: new Set(),
   toastTimer: null,
-  modalResolve: null
+  modalResolve: null,
+  editingTemplateId: null,
+  templateEditorDraft: null
 };
 
 function h(value) {
@@ -214,11 +225,20 @@ function createCitationDraft(group, sender) {
   const groupedKillmail = citationKillmail(group);
   groupedKillmail.attackerType = rememberedAttackerType(group.primary);
   groupedKillmail.customOffenses = state.settings.customOffenses;
-  return makeCitationDraft(groupedKillmail, sender);
+  const template = findCitationTemplate(state.settings.citationTemplates, state.settings.citationTemplateId);
+  return makeCitationDraft(groupedKillmail, sender, undefined, Math.random, template);
 }
 
 function createManualCitationDraft(sender) {
-  return makeManualCitationDraft(sender, [], Math.random, state.settings.customOffenses);
+  const template = findCitationTemplate(state.settings.citationTemplates, state.settings.citationTemplateId);
+  return makeManualCitationDraft(sender, [], Math.random, state.settings.customOffenses, template);
+}
+
+function generatedSubjectForDraft(draft) {
+  const generated = { ...draft };
+  delete generated.subject;
+  delete generated.subjectOverride;
+  return buildCitation(generated).subject;
 }
 
 function formatNameList(values, fallback = '') {
@@ -332,6 +352,84 @@ function officersForGroup(group) {
   return [...officers.values()];
 }
 
+function recipientNameForGroup(group, characterId) {
+  const id = Number(characterId);
+  const citedRecipient = recipientsForGroup(group).find((recipient) => recipient.id === id);
+  if (citedRecipient) return citedRecipient.name;
+
+  for (const record of group?.records || []) {
+    const attackerName = record.enriched?.attackerNames?.[String(id)];
+    if (attackerName) return attackerName;
+  }
+
+  return officersForGroup(group).find((officer) => officer.id === id)?.name
+    || getCharacter(id)?.name
+    || `Character ${id}`;
+}
+
+function citationRecipientsForComposer(group, killmail, sender, attackerType) {
+  const manual = Boolean(killmail?.manualCitation);
+  const citedIds = new Set(recipientsForGroup(group).map((recipient) => recipient.id));
+  const fleetIds = new Set(isFleetAttackerType(attackerType) && !manual
+    ? distinctAttackingPilotIds(group?.records)
+    : []);
+  let characterIds;
+
+  if (state.settings.testMode) {
+    characterIds = manual
+      ? [Number(sender?.id)].filter((id) => Number.isSafeInteger(id) && id > 0)
+      : (isFleetAttackerType(attackerType)
+          ? [...fleetIds]
+          : officersForGroup(group).map((officer) => officer.id));
+  } else {
+    characterIds = deliveryRecipientIdsForGroup(group, attackerType);
+  }
+
+  return {
+    testMode: state.settings.testMode,
+    characters: characterIds.map((id) => ({
+      id,
+      name: recipientNameForGroup(group, id),
+      role: state.settings.testMode
+        ? 'Test recipient'
+        : (citedIds.has(id) ? 'Cited pilot' : (fleetIds.has(id) ? 'Fleet copy' : 'Recipient'))
+    })),
+    mailingListId: state.settings.testMode ? null : Number(state.settings.mailingListId)
+  };
+}
+
+function renderCitationRecipients(group, killmail, sender, attackerType) {
+  const recipients = citationRecipientsForComposer(group, killmail, sender, attackerType);
+  const characterRecipients = recipients.characters.length
+    ? recipients.characters.map((recipient) => `
+        <div class="citation-recipient">
+          <strong>${h(recipient.name)}</strong>
+          <small>${h(recipient.role)} · Character #${recipient.id}</small>
+        </div>
+      `).join('')
+    : '<div class="citation-recipient is-missing"><strong>No character recipient available</strong><small>Resolve the recipient requirements before sending.</small></div>';
+  const hasMailingList = Number.isSafeInteger(recipients.mailingListId) && recipients.mailingListId > 0;
+  const mailingListRecipient = recipients.testMode
+    ? ''
+    : `<div class="citation-recipient ${hasMailingList ? '' : 'is-missing'}">
+        <strong>${hasMailingList ? `Mailing list #${recipients.mailingListId}` : 'Mailing list not configured'}</strong>
+        <small>${hasMailingList ? 'Live citation copy' : 'A valid mailing list is required before sending.'}</small>
+      </div>`;
+
+  return `
+    <section class="citation-recipients-field" aria-labelledby="citation-recipients-label">
+      <div class="citation-recipients-heading">
+        <span id="citation-recipients-label">EVE Mail recipients</span>
+        <strong>${recipients.testMode ? 'TEST delivery' : 'Live delivery'}</strong>
+      </div>
+      <div class="citation-recipient-list">${characterRecipients}${mailingListRecipient}</div>
+      <small class="citation-recipients-help">${recipients.testMode
+        ? 'Only the test recipients shown here will receive this citation.'
+        : 'Every character and mailing list shown here will receive this citation.'}</small>
+    </section>
+  `;
+}
+
 async function loadState() {
   const [characters, killmails, history, settings] = await Promise.all([
     store.getAll('characters'),
@@ -347,8 +445,13 @@ async function loadState() {
     ...DEFAULT_SETTINGS,
     ...(settings || {}),
     attackerRoles: { ...(settings?.attackerRoles || {}) },
-    customOffenses: availableOffenses(settings?.customOffenses).filter((offense) => offense.custom)
+    customOffenses: availableOffenses(settings?.customOffenses).filter((offense) => offense.custom),
+    citationTemplates: citationTemplates(settings?.citationTemplates)
   };
+  state.settings.citationTemplateId = findCitationTemplate(
+    state.settings.citationTemplates,
+    settings?.citationTemplateId
+  ).id;
   const manualImports = state.killmails.filter((killmail) => killmail.manualImportedAt && killmail.detail);
   manualImports.forEach((killmail) => applyKillmailClassification(killmail));
   await store.putMany('killmails', manualImports);
@@ -363,7 +466,7 @@ function applyAppearance() {
 }
 
 function changeView(view) {
-  state.currentView = ['dashboard', 'history', 'settings'].includes(view) ? view : 'dashboard';
+  state.currentView = ['dashboard', 'history', 'templates', 'settings'].includes(view) ? view : 'dashboard';
   render();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -373,6 +476,7 @@ function render() {
   renderVisibleView();
   renderDashboard();
   renderHistory();
+  renderCitationTemplates();
   renderSettings();
 }
 
@@ -399,6 +503,7 @@ function renderVisibleView() {
   document.getElementById('welcome-view').hidden = !showWelcome;
   document.getElementById('dashboard-view').hidden = state.currentView !== 'dashboard' || showWelcome;
   document.getElementById('history-view').hidden = state.currentView !== 'history';
+  document.getElementById('templates-view').hidden = state.currentView !== 'templates';
   document.getElementById('settings-view').hidden = state.currentView !== 'settings';
 
   const loginButton = document.getElementById('welcome-login-button');
@@ -787,6 +892,39 @@ function renderComposer() {
   const senderOptions = state.characters.map((character) => `
     <option value="${character.id}" ${Number(character.id) === Number(sender?.id) ? 'selected' : ''}>${h(character.name)}</option>
   `).join('');
+  const availableTemplates = citationTemplates(state.settings.citationTemplates);
+  const draftTemplateExists = availableTemplates.some((template) => template.id === state.draft.templateId);
+  const templateOptions = `${draftTemplateExists ? '' : '<option value="" selected>Current draft · template unavailable</option>'}${availableTemplates.map((template) => `
+    <option value="${h(template.id)}" ${template.id === state.draft.templateId ? 'selected' : ''}>${h(template.name)}</option>
+  `).join('')}`;
+  const draftTemplate = state.draft.citationTemplate || findCitationTemplate(availableTemplates, state.draft.templateId);
+  const templateSource = `${draftTemplate.subject}\n${draftTemplate.sections.map((section) => section.body).join('\n')}`;
+  const usesOffenseSelection = citationTemplateUsesOffenses(draftTemplate);
+  const usesNarrativeActivity = /\{\{\s*(?:openingNarrative|activity)\s*\}\}/.test(templateSource);
+  const usesShortTitle = /\{\{\s*title\s*\}\}/.test(draftTemplate.subject);
+  const templateSectionEditors = draftTemplate.sections
+    .filter((section) => section.editor !== 'none')
+    .map((section) => `
+      <label class="composer-field">
+        <span>${h(section.name)}${section.optional ? ' · optional' : ''}${section.editor === 'list' ? ' · one bullet per line' : ''}</span>
+        <textarea data-draft-section-id="${h(section.id)}" data-draft-section-editor="${h(section.editor)}" ${section.optional ? 'placeholder="Leave blank to omit this section"' : ''}>${h(state.draft.sectionValues?.[section.id] || '')}</textarea>
+      </label>
+    `).join('');
+  const shortTitleField = usesShortTitle ? `
+    <label class="composer-field">
+      <span>Short title</span>
+      <input data-draft-field="title" value="${h(state.draft.title)}" maxlength="132">
+    </label>
+  ` : '';
+  const offenseSelection = usesOffenseSelection ? `
+    <div class="composer-field legal-activity-field">
+      <span>Charges${usesNarrativeActivity ? ' & activity' : ''} · select offenses from the <a href="https://whpd.space/LegalLibrary.html" target="_blank" rel="noopener noreferrer">Legal Library</a></span>
+      <div class="legal-checklist">
+        ${renderOffenseCheckboxes(state.draft.offenseIds)}
+      </div>
+      ${usesNarrativeActivity ? `<p id="activity-summary" class="activity-summary">Narrative activity: ${h(state.draft.activity || 'Select at least one offense')}</p>` : ''}
+    </div>
+  ` : '';
 
   root.innerHTML = `
     <div class="composer-header">
@@ -813,15 +951,23 @@ function renderComposer() {
     <div class="composer-form">
       <div class="citation-fields">
         ${manualFields}
+        <label class="composer-field citation-template-picker">
+          <span>Citation template</span>
+          <select id="citation-template-select">${templateOptions}</select>
+          <small>Applies the template and rebuilds the section-specific composer boxes below.</small>
+        </label>
+        <label class="composer-field citation-subject-field">
+          <span>EVE Mail subject</span>
+          <input data-draft-field="subject" value="${h(state.draft.subject || '')}" maxlength="132" required>
+          <small>Required. Initially generated by the selected template and editable for this citation.</small>
+        </label>
+        ${renderCitationRecipients(group, killmail, sender, attackerType)}
         <div class="field-grid">
           <label class="composer-field">
             <span>EVE Mail sender</span>
             <select id="composer-sender" ${!manual && state.settings.senderMode === 'final-blow' ? 'disabled' : ''}>${senderOptions}</select>
           </label>
-          <label class="composer-field">
-            <span>Short title</span>
-            <input data-draft-field="title" value="${h(state.draft.title)}" maxlength="132">
-          </label>
+          ${shortTitleField}
           <label class="composer-field">
             <span>Total value</span>
             <input data-draft-field="totalValue" value="${h(state.draft.totalValue)}" placeholder="123,456,789 ISK">
@@ -844,29 +990,8 @@ function renderComposer() {
             <input data-draft-field="officerName" value="${h(state.draft.officerName)}" ${isFleetAttacker && !manual ? 'readonly' : ''}>
           </label>
         </div>
-        <div class="composer-field legal-activity-field">
-          <span>Activity · select offenses from the <a href="https://whpd.space/LegalLibrary.html" target="_blank" rel="noopener noreferrer">Legal Library</a></span>
-          <div class="legal-checklist">
-            ${renderOffenseCheckboxes(state.draft.offenseIds)}
-          </div>
-          <p id="activity-summary" class="activity-summary">Narrative activity: ${h(state.draft.activity || 'Select at least one offense')}</p>
-        </div>
-        <label class="composer-field">
-          <span>Opening humor</span>
-          <textarea data-draft-field="humor">${h(state.draft.humor)}</textarea>
-        </label>
-        <label class="composer-field">
-          <span>Evidence · one bullet per line</span>
-          <textarea data-draft-list="evidence">${h(state.draft.evidence.join('\n'))}</textarea>
-        </label>
-        <label class="composer-field">
-          <span>Officer Comments · optional</span>
-          <textarea data-draft-list="officerComments" placeholder="Leave blank to omit this section">${h((state.draft.officerComments || []).join('\n'))}</textarea>
-        </label>
-        <label class="composer-field">
-          <span>Final WHPD note</span>
-          <textarea data-draft-field="finalNote">${h(state.draft.finalNote)}</textarea>
-        </label>
+        ${offenseSelection}
+        ${templateSectionEditors}
         ${senderWarning(killmail, sender, group)}
       </div>
       <div class="citation-output">
@@ -1076,6 +1201,82 @@ function renderSettings() {
     </div>
   `).join('');
   renderCustomOffenses();
+}
+
+function renderCitationTemplates() {
+  const root = document.getElementById('citation-template-list');
+  const editor = document.getElementById('citation-template-editor');
+  if (!root || !editor) return;
+  const templates = citationTemplates(state.settings.citationTemplates);
+  root.innerHTML = templates.map((template) => {
+    const isDefault = template.id === DEFAULT_CITATION_TEMPLATE_ID;
+    const isProtected = isProtectedCitationTemplateId(template.id);
+    const badgeLabel = isDefault ? 'Default' : (isProtected ? 'Built-in' : 'Custom');
+    const editableCount = template.sections.filter((section) => section.editor !== 'none').length;
+    return `
+      <div class="citation-template-row">
+        <span class="citation-template-badge ${isDefault ? 'is-standard' : (isProtected ? 'is-built-in' : '')}">${badgeLabel}</span>
+        <span class="citation-template-copy">
+          <strong>${h(template.name)}</strong>
+          <small>${template.sections.length} sections · ${editableCount} composer ${editableCount === 1 ? 'box' : 'boxes'}${isProtected ? ' · cannot be removed' : ''}</small>
+        </span>
+        <span class="citation-template-actions">
+          <button type="button" class="button button-ghost button-small" data-edit-citation-template="${h(template.id)}">Edit</button>
+          ${isProtected ? '' : `<button type="button" class="button button-ghost button-small" data-remove-citation-template="${h(template.id)}">Remove</button>`}
+        </span>
+      </div>
+    `;
+  }).join('');
+
+  const editingId = state.editingTemplateId;
+  editor.hidden = !editingId;
+  if (!editingId) return;
+  const isNew = editingId === 'new';
+  const template = state.templateEditorDraft;
+  if (!template) return;
+  document.getElementById('citation-template-editor-title').textContent = isNew ? 'New template' : `Edit ${template.name}`;
+  document.getElementById('citation-template-name').value = template.name;
+  document.getElementById('citation-template-subject').value = template.subject;
+  document.getElementById('citation-template-section-list').innerHTML = template.sections.map((section, index) => `
+    <article class="template-section-card" data-template-section-id="${h(section.id)}">
+      <div class="template-section-card-heading">
+        <span class="template-section-order">${index + 1}</span>
+        <strong>${h(section.name || 'Untitled section')}</strong>
+        <span class="template-section-actions">
+          <button type="button" class="button button-ghost button-small" data-template-section-action="up" data-template-section-id="${h(section.id)}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${h(section.name || 'section')} up">↑</button>
+          <button type="button" class="button button-ghost button-small" data-template-section-action="down" data-template-section-id="${h(section.id)}" ${index === template.sections.length - 1 ? 'disabled' : ''} aria-label="Move ${h(section.name || 'section')} down">↓</button>
+          <button type="button" class="button button-ghost button-small" data-template-section-action="remove" data-template-section-id="${h(section.id)}">Remove</button>
+        </span>
+      </div>
+      <div class="template-section-grid">
+        <label class="field">
+          <span>Section name</span>
+          <input data-template-section-field="name" data-template-section-id="${h(section.id)}" maxlength="100" value="${h(section.name)}">
+        </label>
+        <label class="field">
+          <span>Composer editor</span>
+          <select data-template-section-field="editor" data-template-section-id="${h(section.id)}">
+            <option value="none" ${section.editor === 'none' ? 'selected' : ''}>None · fixed section</option>
+            <option value="text" ${section.editor === 'text' ? 'selected' : ''}>Paragraph</option>
+            <option value="list" ${section.editor === 'list' ? 'selected' : ''}>One bullet per line</option>
+          </select>
+        </label>
+        <label class="field template-section-body-field">
+          <span>Section layout / EVE HTML</span>
+          <textarea data-template-section-field="body" data-template-section-id="${h(section.id)}" maxlength="12000">${h(section.body)}</textarea>
+        </label>
+        <label class="field template-section-default-field ${section.editor === 'none' ? 'is-disabled' : ''}">
+          <span>Default editable value</span>
+          <textarea data-template-section-field="defaultValue" data-template-section-id="${h(section.id)}" maxlength="4000" ${section.editor === 'none' ? 'disabled' : ''}>${h(section.defaultValue)}</textarea>
+        </label>
+      </div>
+      <label class="toggle-row template-section-optional ${section.editor === 'none' ? 'is-disabled' : ''}">
+        <input type="checkbox" data-template-section-field="optional" data-template-section-id="${h(section.id)}" ${section.optional ? 'checked' : ''} ${section.editor === 'none' ? 'disabled' : ''}>
+        <span><strong>Optional section</strong><small>Omit this entire section when its composer box is blank.</small></span>
+      </label>
+    </article>
+  `).join('');
+  document.getElementById('save-citation-template-button').textContent = isNew ? 'Create template' : 'Save changes';
 }
 
 function renderCustomOffenses() {
@@ -1306,8 +1507,15 @@ async function enrichKillmails(killmails) {
     const managedAttackers = attackers.filter((attacker) => managed.has(Number(attacker.character_id)));
     const involvedOfficer = selectInvolvedOfficer(attackers, managed) || {};
     const senderShips = {};
+    const attackerNames = {};
     managedAttackers.forEach((attacker) => {
       if (attacker.character_id) senderShips[String(attacker.character_id)] = names.get(Number(attacker.ship_type_id)) || 'WHPD patrol vessel';
+    });
+    attackers.forEach((attacker) => {
+      const characterId = Number(attacker.character_id);
+      if (Number.isSafeInteger(characterId) && characterId > 0) {
+        attackerNames[String(characterId)] = names.get(characterId) || `Character ${characterId}`;
+      }
     });
 
     killmail.killmailTime = detail.killmail_time;
@@ -1329,7 +1537,8 @@ async function enrichKillmails(killmails) {
         ? names.get(Number(involvedOfficer.character_id))
         : killmail.enriched?.officerName || '',
       officerShipName: names.get(Number(involvedOfficer.ship_type_id)) || killmail.enriched?.officerShipName || '',
-      senderShips
+      senderShips,
+      attackerNames
     };
   });
 }
@@ -1421,9 +1630,12 @@ async function resolveManualRecipient() {
     manual.enriched.victimName = character.name;
     manual.enriched.victimCorporationName = character.corporationName;
     manual.enriched.victimAllianceName = character.allianceName;
+    const priorGeneratedSubject = generatedSubjectForDraft(state.draft);
+    const shouldRefreshSubject = state.draft.subject === priorGeneratedSubject;
     state.draft.pilotName = character.name;
     state.draft.corporationName = character.corporationName || state.draft.corporationName;
     state.draft.allianceName = character.allianceName || state.draft.allianceName;
+    if (shouldRefreshSubject) state.draft.subject = generatedSubjectForDraft(state.draft);
     showToast(`${character.name} verified as the EVE Mail recipient.`);
   } catch (error) {
     if (state.manualCitation !== manual) return;
@@ -1591,6 +1803,11 @@ async function saveSettings(event) {
     layoutWidth: document.getElementById('layout-width-select').value,
     attackerRoles: { ...(state.settings.attackerRoles || {}) },
     customOffenses: availableOffenses(state.settings.customOffenses).filter((offense) => offense.custom),
+    citationTemplateId: findCitationTemplate(
+      state.settings.citationTemplates,
+      state.settings.citationTemplateId
+    ).id,
+    citationTemplates: citationTemplates(state.settings.citationTemplates),
     pageCount: Number(document.getElementById('page-count-select').value) || 2
   };
   await store.setSetting('settings', state.settings);
@@ -1600,6 +1817,139 @@ async function saveSettings(event) {
   state.draft = null;
   render();
   showToast('Settings saved.');
+}
+
+function citationTemplateId() {
+  if (typeof crypto.randomUUID === 'function') return `template-${crypto.randomUUID()}`;
+  const values = crypto.getRandomValues(new Uint32Array(2));
+  return `template-${Date.now()}-${values[0].toString(16)}${values[1].toString(16)}`;
+}
+
+function citationTemplateSectionId() {
+  if (typeof crypto.randomUUID === 'function') return `section-${crypto.randomUUID()}`;
+  const values = crypto.getRandomValues(new Uint32Array(2));
+  return `section-${Date.now()}-${values[0].toString(16)}${values[1].toString(16)}`;
+}
+
+function beginCitationTemplate(templateId = 'new') {
+  const existing = templateId === 'new'
+    ? null
+    : citationTemplates(state.settings.citationTemplates).find((template) => template.id === templateId);
+  if (templateId !== 'new' && !existing) return;
+  state.editingTemplateId = templateId;
+  state.templateEditorDraft = existing
+    ? { ...existing, sections: existing.sections.map((section) => ({ ...section })) }
+    : {
+      id: 'new',
+      name: '',
+      subject: 'Citation Issued: {{title}}',
+      sections: [{
+        id: citationTemplateSectionId(),
+        name: 'New section',
+        body: '{{contentWhite}}',
+        editor: 'text',
+        defaultValue: '',
+        optional: false
+      }]
+    };
+  renderCitationTemplates();
+  document.getElementById('citation-template-name')?.focus();
+}
+
+function addCitationTemplateSection() {
+  if (!state.templateEditorDraft) return;
+  state.templateEditorDraft.sections.push({
+    id: citationTemplateSectionId(),
+    name: 'New section',
+    body: '{{contentWhite}}',
+    editor: 'text',
+    defaultValue: '',
+    optional: false
+  });
+  renderCitationTemplates();
+}
+
+async function updateCitationTemplateSection(sectionId, action) {
+  const sections = state.templateEditorDraft?.sections;
+  if (!sections) return;
+  const index = sections.findIndex((section) => section.id === sectionId);
+  if (index === -1) return;
+  if (action === 'remove') {
+    if (sections.length === 1) {
+      await showAlert('A citation template must contain at least one section.', { title: 'Section required' });
+      return;
+    }
+    sections.splice(index, 1);
+  } else if (action === 'up' && index > 0) {
+    [sections[index - 1], sections[index]] = [sections[index], sections[index - 1]];
+  } else if (action === 'down' && index < sections.length - 1) {
+    [sections[index + 1], sections[index]] = [sections[index], sections[index + 1]];
+  }
+  renderCitationTemplates();
+}
+
+async function saveCitationTemplate() {
+  const editingId = state.editingTemplateId;
+  const editorDraft = state.templateEditorDraft;
+  if (!editingId || !editorDraft) return;
+  const isNew = editingId === 'new';
+  const candidate = normalizeCitationTemplate({
+    id: isNew ? citationTemplateId() : editingId,
+    name: editorDraft.name,
+    subject: editorDraft.subject,
+    sections: editorDraft.sections
+  });
+  if (!candidate) {
+    await showAlert('Enter a template name and subject, and ensure every section has a unique ID, name, and section layout.', { title: 'Incomplete template' });
+    return;
+  }
+
+  const templates = citationTemplates(state.settings.citationTemplates);
+  const duplicate = templates.some((template) => (
+    template.id !== candidate.id && template.name.toLowerCase() === candidate.name.toLowerCase()
+  ));
+  if (duplicate) {
+    await showAlert('A citation template with that name already exists.', { title: 'Duplicate template' });
+    return;
+  }
+
+  const next = isNew
+    ? [...templates, candidate]
+    : templates.map((template) => (template.id === candidate.id ? candidate : template));
+  state.settings.citationTemplates = citationTemplates(next);
+  await store.setSetting('settings', state.settings);
+  state.editingTemplateId = null;
+  state.templateEditorDraft = null;
+  renderCitationTemplates();
+  showToast(isNew ? `${candidate.name} created.` : `${candidate.name} updated.`);
+}
+
+async function removeCitationTemplate(templateId) {
+  if (isProtectedCitationTemplateId(templateId)) {
+    const protectedTemplate = findCitationTemplate(state.settings.citationTemplates, templateId);
+    await showAlert(`The ${protectedTemplate.name} template is always available and cannot be removed.`, { title: 'Built-in template protected' });
+    return;
+  }
+  const template = citationTemplates(state.settings.citationTemplates)
+    .find((item) => item.id === templateId);
+  if (!template) return;
+  const approved = await requestApproval(
+    `Remove “${template.name}” from this device? Existing citation ledger entries will not be changed.`,
+    { title: 'Remove citation template?', confirmLabel: 'Remove template', tone: 'danger' }
+  );
+  if (!approved) return;
+
+  state.settings.citationTemplates = citationTemplates(
+    state.settings.citationTemplates.filter((item) => item.id !== template.id)
+  );
+  if (state.settings.citationTemplateId === template.id) {
+    state.settings.citationTemplateId = DEFAULT_CITATION_TEMPLATE_ID;
+  }
+  if (state.editingTemplateId === template.id) state.editingTemplateId = null;
+  if (state.editingTemplateId === null) state.templateEditorDraft = null;
+  await store.setSetting('settings', state.settings);
+  renderCitationTemplates();
+  showToast(`${template.name} removed.`);
 }
 
 function customOffenseId() {
@@ -1767,6 +2117,27 @@ function bindEvents() {
       return;
     }
 
+    const editCitationTemplateButton = event.target.closest('[data-edit-citation-template]');
+    if (editCitationTemplateButton) {
+      beginCitationTemplate(editCitationTemplateButton.dataset.editCitationTemplate);
+      return;
+    }
+
+    const removeCitationTemplateButton = event.target.closest('[data-remove-citation-template]');
+    if (removeCitationTemplateButton) {
+      await removeCitationTemplate(removeCitationTemplateButton.dataset.removeCitationTemplate);
+      return;
+    }
+
+    const templateSectionAction = event.target.closest('[data-template-section-action]');
+    if (templateSectionAction) {
+      await updateCitationTemplateSection(
+        templateSectionAction.dataset.templateSectionId,
+        templateSectionAction.dataset.templateSectionAction
+      );
+      return;
+    }
+
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (action === 'clear-record') return setKillmailStatus('cleared');
     if (action === 'restore-record') return setKillmailStatus('pending');
@@ -1807,11 +2178,47 @@ function bindEvents() {
       return;
     }
 
+    if (event.target.id === 'citation-template-name' && state.templateEditorDraft) {
+      state.templateEditorDraft.name = event.target.value;
+      return;
+    }
+
+    if (event.target.id === 'citation-template-subject' && state.templateEditorDraft) {
+      state.templateEditorDraft.subject = event.target.value;
+      return;
+    }
+
+    const templateSectionField = event.target.dataset.templateSectionField;
+    if (templateSectionField && state.templateEditorDraft) {
+      const section = state.templateEditorDraft.sections
+        .find((item) => item.id === event.target.dataset.templateSectionId);
+      if (section && ['name', 'body', 'defaultValue'].includes(templateSectionField)) {
+        section[templateSectionField] = event.target.value;
+      }
+      return;
+    }
+
     if (!state.draft) return;
+    const draftSectionId = event.target.dataset.draftSectionId;
+    if (draftSectionId) {
+      const value = event.target.dataset.draftSectionEditor === 'list'
+        ? event.target.value.split(/\r?\n/).map(cleanCitationText).filter(Boolean).join('\n')
+        : cleanCitationText(event.target.value);
+      state.draft.sectionValues = { ...(state.draft.sectionValues || {}), [draftSectionId]: value };
+      refreshCitationPreview();
+      return;
+    }
     const field = event.target.dataset.draftField;
     const list = event.target.dataset.draftList;
     if (field) {
+      const priorGeneratedSubject = field === 'subject' ? '' : generatedSubjectForDraft(state.draft);
+      const shouldRefreshSubject = field !== 'subject' && state.draft.subject === priorGeneratedSubject;
       state.draft[field] = cleanCitationText(event.target.value);
+      if (shouldRefreshSubject) {
+        state.draft.subject = generatedSubjectForDraft(state.draft);
+        const subjectInput = document.querySelector('[data-draft-field="subject"]');
+        if (subjectInput) subjectInput.value = state.draft.subject;
+      }
       if (field === 'pilotName' && state.manualCitation
         && cleanCitationText(event.target.value).toLowerCase() !== String(state.manualCitation.resolvedName || '').toLowerCase()) {
         clearResolvedManualRecipient();
@@ -1825,6 +2232,20 @@ function bindEvents() {
   });
 
   document.addEventListener('change', async (event) => {
+    const templateSectionField = event.target.dataset.templateSectionField;
+    if (templateSectionField && state.templateEditorDraft) {
+      const section = state.templateEditorDraft.sections
+        .find((item) => item.id === event.target.dataset.templateSectionId);
+      if (section) {
+        if (templateSectionField === 'optional') section.optional = event.target.checked;
+        if (templateSectionField === 'editor') {
+          section.editor = ['none', 'text', 'list'].includes(event.target.value) ? event.target.value : 'none';
+          if (section.editor === 'none') section.optional = false;
+        }
+        renderCitationTemplates();
+      }
+      return;
+    }
     if (event.target.matches('[data-incident-select]')) {
       await toggleBundledIncident(event.target.dataset.incidentSelect, event.target.checked);
       return;
@@ -1833,7 +2254,10 @@ function bindEvents() {
       const group = selectedKillmailGroup();
       if (!group) return;
       const attackerType = event.target.value;
+      const priorGeneratedSubject = generatedSubjectForDraft(state.draft);
+      const shouldRefreshSubject = state.draft.subject === priorGeneratedSubject;
       setDraftAttackerType(state.draft, attackerType, group);
+      if (shouldRefreshSubject) state.draft.subject = generatedSubjectForDraft(state.draft);
       if (!group.primary?.manualCitation && (attackerType === 'officer' || attackerType === 'deputy')) {
         const finalBlow = finalBlowAttacker(group.primary);
         const characterId = Number(group.primary?.finalBlowCharacterId || finalBlow?.character_id);
@@ -1848,11 +2272,27 @@ function bindEvents() {
       renderComposer();
       return;
     }
+    if (event.target.id === 'citation-template-select' && state.draft) {
+      const template = findCitationTemplate(state.settings.citationTemplates, event.target.value);
+      state.settings.citationTemplateId = template.id;
+      await store.setSetting('settings', state.settings);
+      state.draft = applyCitationTemplate(state.draft, template);
+      renderComposer();
+      showToast(`${template.name} applied.`);
+      return;
+    }
     if (event.target.matches('[data-offense-id]') && state.draft) {
+      const priorGeneratedSubject = generatedSubjectForDraft(state.draft);
+      const shouldRefreshSubject = state.draft.subject === priorGeneratedSubject;
       state.draft.offenseIds = [...document.querySelectorAll('[data-offense-id]:checked')]
         .map((input) => input.dataset.offenseId);
       state.draft.activity = activityForOffenses(state.draft.offenseIds, state.settings.customOffenses);
       state.draft.charges = chargesForOffenses(state.draft.offenseIds, state.settings.customOffenses);
+      if (shouldRefreshSubject) {
+        state.draft.subject = generatedSubjectForDraft(state.draft);
+        const subjectInput = document.querySelector('[data-draft-field="subject"]');
+        if (subjectInput) subjectInput.value = state.draft.subject;
+      }
       const summary = document.getElementById('activity-summary');
       if (summary) summary.textContent = `Narrative activity: ${state.draft.activity || 'Select at least one offense'}`;
       refreshCitationPreview();
@@ -1883,6 +2323,11 @@ function bindEvents() {
   });
 
   document.addEventListener('keydown', async (event) => {
+    if (event.key === 'Enter' && event.target.id === 'citation-template-name') {
+      event.preventDefault();
+      await saveCitationTemplate();
+      return;
+    }
     if (event.key === 'Enter' && event.target.matches('#custom-offense-title, #custom-offense-code')) {
       event.preventDefault();
       await addCustomOffense();
@@ -1901,6 +2346,14 @@ function bindEvents() {
   document.getElementById('welcome-login-button').addEventListener('click', () => beginLogin());
   document.getElementById('settings-add-character-button').addEventListener('click', () => beginLogin());
   document.getElementById('settings-form').addEventListener('submit', saveSettings);
+  document.getElementById('new-citation-template-button').addEventListener('click', () => beginCitationTemplate());
+  document.getElementById('add-citation-template-section-button').addEventListener('click', addCitationTemplateSection);
+  document.getElementById('cancel-citation-template-button').addEventListener('click', () => {
+    state.editingTemplateId = null;
+    state.templateEditorDraft = null;
+    renderCitationTemplates();
+  });
+  document.getElementById('save-citation-template-button').addEventListener('click', saveCitationTemplate);
   document.getElementById('add-custom-offense-button').addEventListener('click', addCustomOffense);
   document.getElementById('zkill-import-form').addEventListener('submit', importZkillRecord);
   document.getElementById('clear-pending-button').addEventListener('click', clearPending);

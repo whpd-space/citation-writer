@@ -22,6 +22,8 @@ Open the app at [cw.whpd.space](https://cw.whpd.space).
 - Includes in-game killmail and zKillboard links.
 - Provides the full WHPD Legal Library as an alphabetical checklist.
 - Supports your own custom misdemeanors and felonies.
+- Provides reusable citation templates with user-defined, ordered sections and composer boxes.
+- Keeps WHPD Squizz Standard and WHPD Minimal available as protected built-in templates.
 - Supports Officer, Deputy, Fleet, and Memefleet attribution.
 - Sends Fleet and Memefleet citation copies to every involved capsuleer attacker.
 - Can send from the final-blow character or a designated character.
@@ -41,6 +43,10 @@ Settings lets you:
 - Add or remove custom offenses.
 - Change the theme and layout width.
 - Remove authorized characters or erase all local app data.
+
+## Templates
+
+The Templates tab lets you create, review, edit, and remove citation templates. Each template defines a required subject format, ordered sections, EVE HTML layout, optionality, and whether it creates a paragraph, bullet-list, or fixed section. Every draft receives a required, editable subject generated from its template. WHPD Squizz Standard remains the default, while WHPD Minimal provides a one-line citation with no extra composer boxes. Both built-ins can be edited but cannot be removed.
 
 ## Your data
 

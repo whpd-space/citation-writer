@@ -4,11 +4,20 @@ import { readFileSync } from 'node:fs';
 
 import {
   activityForOffenses,
+  applyCitationTemplate,
   availableOffenses,
   CITATION_FOOTER,
   CITATION_HEADERS,
+  citationTemplateUsesOffenses,
+  citationTemplates,
+  DEFAULT_CITATION_TEMPLATE,
+  DEFAULT_CITATION_TEMPLATE_ID,
+  DEFAULT_CITATION_SECTION_IDS,
+  MINIMAL_CITATION_TEMPLATE,
+  MINIMAL_CITATION_TEMPLATE_ID,
   FINAL_NOTES,
   HUMOR,
+  isProtectedCitationTemplateId,
   buildCitation,
   chargesForOffenses,
   cleanCitationText,
@@ -83,7 +92,7 @@ test('uses only the citation rule block HTML tags', () => {
   assert.ok(!body.includes('–'));
 });
 
-test('keeps disclaimer and footer fixed', () => {
+test('keeps the standard template disclaimer and footer unchanged', () => {
   const { body } = buildCitation(completeDraft);
   assert.ok(body.includes('<font color="white">If you\'re taking any of this seriously you\'re doing it wrong!</font>'));
   assert.ok(body.endsWith(CITATION_FOOTER));
@@ -126,6 +135,147 @@ test('omits the optional Officer Comments section and its separator when blank',
   assert.ok(!withoutComments.includes(CITATION_HEADERS.officerComments));
   assert.equal((withComments.match(/\n\n===\n\n/g) || []).length, 6);
   assert.equal((withoutComments.match(/\n\n===\n\n/g) || []).length, 5);
+});
+
+test('keeps the standard and minimal built-ins available and undeletable', () => {
+  const custom = {
+    id: 'template-border-patrol',
+    name: 'Border Patrol',
+    humor: 'Custom opening.',
+    evidence: 'Custom evidence.',
+    officerComments: '',
+    finalNote: 'Custom final note.'
+  };
+  const templates = citationTemplates([custom]);
+  assert.equal(templates[0].id, DEFAULT_CITATION_TEMPLATE_ID);
+  assert.deepEqual(templates[0], DEFAULT_CITATION_TEMPLATE);
+  assert.equal(templates[1].id, MINIMAL_CITATION_TEMPLATE_ID);
+  assert.deepEqual(templates[1], MINIMAL_CITATION_TEMPLATE);
+  assert.equal(templates[2].name, 'Border Patrol');
+
+  const afterRemovingEveryStoredTemplate = citationTemplates([]);
+  assert.deepEqual(afterRemovingEveryStoredTemplate, [DEFAULT_CITATION_TEMPLATE, MINIMAL_CITATION_TEMPLATE]);
+  assert.equal(isProtectedCitationTemplateId(DEFAULT_CITATION_TEMPLATE_ID), true);
+  assert.equal(isProtectedCitationTemplateId(MINIMAL_CITATION_TEMPLATE_ID), true);
+  assert.equal(isProtectedCitationTemplateId(custom.id), false);
+
+  const updatedStandard = citationTemplates([{
+    ...DEFAULT_CITATION_TEMPLATE,
+    name: 'Updated WHPD Standard',
+    sections: DEFAULT_CITATION_TEMPLATE.sections.map((section) => (
+      section.id === DEFAULT_CITATION_SECTION_IDS.finalNote
+        ? { ...section, defaultValue: 'Updated protected-template note.' }
+        : section
+    ))
+  }]);
+  assert.equal(updatedStandard[0].name, 'Updated WHPD Standard');
+  assert.equal(
+    updatedStandard[0].sections.find((section) => section.id === DEFAULT_CITATION_SECTION_IDS.finalNote).defaultValue,
+    'Updated protected-template note.'
+  );
+
+  const migratedStandard = citationTemplates([{ ...DEFAULT_CITATION_TEMPLATE, name: 'WHPD Standard' }]);
+  assert.equal(migratedStandard[0].name, 'WHPD Squizz Standard');
+});
+
+test('provides an absolutely minimal built-in citation', () => {
+  const draft = applyCitationTemplate({ ...completeDraft }, MINIMAL_CITATION_TEMPLATE);
+  const citation = buildCitation(draft);
+
+  assert.equal(draft.templateId, MINIMAL_CITATION_TEMPLATE_ID);
+  assert.equal(MINIMAL_CITATION_TEMPLATE.sections.length, 1);
+  assert.equal(MINIMAL_CITATION_TEMPLATE.sections[0].editor, 'none');
+  assert.equal(citation.subject, 'Citation: Definitely Innocent');
+  assert.equal(citation.body, '<font color="white">Citation issued to Definitely Innocent.</font>');
+  assert.equal(citationTemplateUsesOffenses(MINIMAL_CITATION_TEMPLATE), false);
+  assert.deepEqual(validateCitation(draft), []);
+});
+
+test('creates citation box values from a template and incident placeholders', () => {
+  const templated = applyCitationTemplate({
+    ...completeDraft,
+    sourceKillmailIds: [123]
+  }, {
+    id: 'template-border-patrol',
+    name: 'Border Patrol',
+    humor: '{{pilotName}} selected the expedited inspection lane.',
+    evidence: '{{defaultEvidence}}\nOfficer {{officerName}} recorded {{totalValue}}.',
+    officerComments: 'Detained in {{systemName}}.',
+    finalNote: 'Please scout before returning in another {{destroyedShipName}}.'
+  }, () => 0);
+
+  assert.equal(templated.templateId, 'template-border-patrol');
+  assert.equal(templated.humor, 'Definitely Innocent selected the expedited inspection lane.');
+  assert.deepEqual(templated.evidence, [
+    'Combat telemetry places Venture in J123456.',
+    'Officer Officer Example recorded 42,000,000 ISK.'
+  ]);
+  assert.deepEqual(templated.officerComments, ['Detained in J123456.']);
+  assert.equal(templated.finalNote, 'Please scout before returning in another Venture.');
+  assert.deepEqual(validateCitation(templated), []);
+});
+
+test('renders the ordered sections defined by a template without fixed citation sections', () => {
+  const template = {
+    id: 'template-compact-report',
+    name: 'Compact Report',
+    subject: 'WHPD Incident: {{pilotName}} in {{systemName}}',
+    sections: [
+      {
+        id: 'incident-summary',
+        name: 'Incident summary',
+        body: '<font color="#ff007fff"><b>Incident:</b></font>\n{{contentWhite}}',
+        editor: 'text',
+        defaultValue: '{{pilotName}} was documented in {{systemName}}.',
+        optional: false
+      },
+      {
+        id: 'desk-notes',
+        name: 'Desk notes',
+        body: '<font color="#ff007fff"><b>Desk notes:</b></font>\n{{contentBullets}}',
+        editor: 'list',
+        defaultValue: 'First custom note\nSecond custom note',
+        optional: false
+      }
+    ]
+  };
+  const draft = applyCitationTemplate({ ...completeDraft, sourceKillmailIds: [123] }, template, () => 0);
+  const { subject, body } = buildCitation(draft);
+
+  assert.deepEqual(draft.citationTemplate.sections.map((section) => section.id), ['incident-summary', 'desk-notes']);
+  assert.equal(subject, 'WHPD Incident: Definitely Innocent in J123456');
+  assert.ok(body.startsWith('<font color="#ff007fff"><b>Incident:</b></font>'));
+  assert.ok(body.includes('Definitely Innocent was documented in J123456.'));
+  assert.ok(body.includes('- <font color="white">First custom note</font>'));
+  assert.equal((body.match(/\n\n===\n\n/g) || []).length, 1);
+  assert.ok(!body.includes(CITATION_HEADERS.charges));
+  assert.ok(!body.includes(CITATION_FOOTER));
+  assert.equal(citationTemplateUsesOffenses(draft.citationTemplate), false);
+  assert.equal(citationTemplateUsesOffenses(DEFAULT_CITATION_TEMPLATE), true);
+  assert.equal(buildCitation({ ...draft, subject: 'Manually revised subject' }).subject, 'Manually revised subject');
+  assert.ok(validateCitation({ ...draft, subject: '' }).includes('EVE Mail subject is required.'));
+  assert.deepEqual(validateCitation(draft), []);
+});
+
+test('sanitizes unsafe HTML in user-defined section layouts', () => {
+  const draft = applyCitationTemplate({ ...completeDraft, sourceKillmailIds: [123] }, {
+    id: 'template-sanitized',
+    name: 'Sanitized',
+    sections: [{
+      id: 'unsafe-section',
+      name: 'Unsafe section',
+      body: '<script>alert(1)</script><a href="javascript:alert(2)">{{content}}</a>',
+      editor: 'text',
+      defaultValue: 'Safe citation copy.',
+      optional: false
+    }]
+  }, () => 0);
+  const { body } = buildCitation(draft);
+
+  assert.ok(!body.includes('<script>'));
+  assert.ok(!body.includes('href="javascript:'));
+  assert.ok(body.includes('&lt;script&gt;'));
+  assert.ok(body.includes('Safe citation copy.'));
 });
 
 test('creates a complete draft from an enriched killmail', () => {
@@ -824,6 +974,51 @@ test('manages browser-local custom offenses from Settings', () => {
   assert.ok(app.includes('async function addCustomOffense()'));
   assert.ok(app.includes('async function removeCustomOffense(offenseId)'));
   assert.ok(app.includes('availableOffenses(state.settings.customOffenses)'));
+});
+
+test('provides browser-local template CRUD and applies templates in the citation composer', () => {
+  const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+
+  assert.ok(index.includes('id="citation-template-list"'));
+  assert.ok(index.includes('id="templates-view"'));
+  assert.ok(index.includes('data-view-target="templates"'));
+  assert.ok(index.includes('id="new-citation-template-button"'));
+  assert.ok(index.includes('id="save-citation-template-button"'));
+  assert.ok(index.includes('id="citation-template-subject"'));
+  assert.ok(index.includes('id="citation-template-section-list"'));
+  assert.ok(index.includes('id="add-citation-template-section-button"'));
+  assert.ok(app.includes('function renderCitationTemplates()'));
+  assert.ok(app.includes('async function saveCitationTemplate()'));
+  assert.ok(app.includes('async function removeCitationTemplate(templateId)'));
+  assert.ok(app.includes('function addCitationTemplateSection()'));
+  assert.ok(app.includes('async function updateCitationTemplateSection(sectionId, action)'));
+  assert.ok(app.includes('isProtectedCitationTemplateId(template.id)'));
+  assert.ok(app.includes('isProtectedCitationTemplateId(templateId)'));
+  assert.ok(app.includes('id="citation-template-select"'));
+  assert.ok(app.includes('data-draft-section-id='));
+  assert.ok(app.includes('data-draft-field="subject"'));
+  assert.ok(app.includes('Required. Initially generated by the selected template'));
+  assert.ok(app.includes('citationTemplateUsesOffenses(draftTemplate)'));
+  assert.ok(app.includes('const offenseSelection = usesOffenseSelection'));
+  assert.ok(!app.includes('<span>Activity · select offenses'));
+  assert.ok(app.includes('state.draft = applyCitationTemplate(state.draft, template)'));
+});
+
+test('shows the exact EVE Mail delivery recipients in the citation composer', () => {
+  const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../css/app.css', import.meta.url), 'utf8');
+
+  assert.ok(app.includes('function citationRecipientsForComposer('));
+  assert.ok(app.includes('function renderCitationRecipients('));
+  assert.ok(app.includes('EVE Mail recipients'));
+  assert.match(app, /state\.settings\.testMode\s*\?\s*'Test recipient'/);
+  assert.ok(app.includes("citedIds.has(id) ? 'Cited pilot'"));
+  assert.ok(app.includes("fleetIds.has(id) ? 'Fleet copy'"));
+  assert.ok(app.includes('Mailing list #${recipients.mailingListId}'));
+  assert.ok(app.includes('attackerNames[String(characterId)]'));
+  assert.match(css, /\.citation-recipient-list\s*{/);
+  assert.match(css, /\.citation-recipient\.is-missing\s*{/);
 });
 
 test('places local data actions under an explicit Danger heading', () => {
