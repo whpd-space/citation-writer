@@ -32,6 +32,7 @@ Open the app at [cw.whpd.space](https://cw.whpd.space).
 - Tracks sent and cleared records in a local ledger.
 - Displays all dates and times in UTC.
 - Offers dark, light, and system themes with centered or full-width layouts.
+- Exports and restores a complete portable backup of settings, templates, combat records, ledger history, and caches without SSO credentials.
 
 ## Settings
 
@@ -42,6 +43,7 @@ Settings lets you:
 - Enable TEST mode.
 - Add or remove custom offenses.
 - Change the theme and layout width.
+- Export everything to a JSON backup or replace local data from a backup.
 - Remove authorized characters or erase all local app data.
 
 ## Templates
@@ -51,6 +53,8 @@ The Templates tab lets you create, review, edit, and remove citation templates. 
 ## Your data
 
 Characters, settings, combat records, and citation history stay in the current browser. Clearing the browser's site data or selecting **Erase all local app data** removes them.
+
+Use **Export everything** in Settings to download all portable local app data. Backup files are unencrypted, but authorized characters and EVE SSO credentials are never included. **Import backup** validates the file, replaces all local data in the current browser, and signs out locally authorized characters; authorize them again after restoring.
 
 Clearing a combat record only removes it from the pending citation queue. It does not delete the EVE killmail.
 

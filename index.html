@@ -337,6 +337,29 @@
           </label>
         </section>
 
+        <section class="panel settings-card local-backup-card">
+          <div class="settings-heading">
+            <span class="settings-icon" aria-hidden="true">DATA</span>
+            <div>
+              <h2>Backup and restore</h2>
+              <p>Move the complete citation desk between browsers or keep a local recovery copy.</p>
+            </div>
+          </div>
+          <p id="backup-contents-note" class="backup-contents-note">Includes every setting and template, custom offenses, all combat records and queue states, the citation ledger, and cached EVE names. Authorized characters and EVE SSO credentials are never included.</p>
+          <div class="button-stack">
+            <button id="export-all-data-button" class="button button-secondary" type="button">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v5h14v-5"/></svg>
+              <span>Export</span>
+            </button>
+            <button id="import-all-data-button" class="button button-secondary" type="button">
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0 4 4m-4-4-4 4M5 15v5h14v-5"/></svg>
+              <span>Import</span>
+            </button>
+            <input id="import-all-data-input" class="visually-hidden" type="file" accept="application/json,.json" aria-describedby="backup-contents-note">
+          </div>
+          <p class="backup-security-note"><strong>Keep backups private.</strong> They are unencrypted, though SSO credentials are excluded. Importing replaces all local app data and signs out every character on this device.</p>
+        </section>
+
         <section class="panel settings-card danger-card">
           <div class="settings-heading">
             <span class="settings-icon settings-icon-danger" aria-hidden="true">!</span>

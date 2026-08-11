@@ -1,5 +1,6 @@
 import { WHPDStore } from './db.js';
 import { ESIClient, parseZkillKillmailId } from './esi.js';
+import { backupCounts, createBackup, parseBackup } from './backup.js';
 import {
   activityForOffenses,
   applyCitationTemplate,
@@ -2064,6 +2065,85 @@ async function eraseAllData() {
   window.location.reload();
 }
 
+function backupFileName(exportedAt) {
+  const timestamp = exportedAt.replace(/[:.]/g, '-');
+  return `whpd-citation-writer-backup-${timestamp}.json`;
+}
+
+async function exportAllData() {
+  const approved = await requestApproval(
+    'Download an unencrypted backup of every setting, template, combat record, ledger entry, and cache? Authorized characters and EVE SSO credentials are excluded. Keep the file private.',
+    { title: 'Export everything?', confirmLabel: 'Download backup' }
+  );
+  if (!approved) return;
+
+  setWorking('Creating backup');
+  try {
+    const backup = createBackup(await store.snapshot());
+    const json = `${JSON.stringify(backup, null, 2)}\n`;
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = backupFileName(backup.exportedAt);
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    const counts = backupCounts(backup);
+    showToast(`Backup downloaded: ${counts.killmails} combat records and ${counts.history} ledger entries.`);
+  } catch (error) {
+    console.error(error);
+    await showAlert(`The backup could not be created: ${error.message}`, { title: 'Export failed', tone: 'danger' });
+  } finally {
+    setWorking('');
+  }
+}
+
+function resetTransientStateAfterImport() {
+  state.statusFilter = 'pending';
+  state.search = '';
+  state.selectedKillmailId = null;
+  state.bundledIncidentIds.clear();
+  state.manualCitation = null;
+  state.draft = null;
+  state.editingTemplateId = null;
+  state.templateEditorDraft = null;
+}
+
+async function importAllData(event) {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+  if (!file) return;
+
+  setWorking('Checking backup');
+  try {
+    const backup = parseBackup(await file.text());
+    const counts = backupCounts(backup);
+    setWorking('');
+    const approved = await requestApproval(
+      `Restore the backup from ${formatUtcDateTime(backup.exportedAt)}? It contains ${counts.killmails} combat ${counts.killmails === 1 ? 'record' : 'records'} and ${counts.history} ledger ${counts.history === 1 ? 'entry' : 'entries'}. This will replace every local setting, template, record, ledger entry, and cache, and sign out all authorized characters on this device.`,
+      { title: 'Replace all local data?', confirmLabel: 'Restore backup', tone: 'danger' }
+    );
+    if (!approved) return;
+
+    setWorking('Restoring backup');
+    await store.replaceAll(backup.stores);
+    resetTransientStateAfterImport();
+    await loadState();
+    render();
+    document.getElementById('settings-status').textContent = `Restored backup from ${formatUtcDateTime(backup.exportedAt)}.`;
+    showToast(`Backup restored. Authorize your EVE characters again to resume syncing and sending.`);
+  } catch (error) {
+    console.error(error);
+    await showAlert(`The backup was not imported: ${error.message}`, { title: 'Import failed', tone: 'danger' });
+  } finally {
+    input.value = '';
+    setWorking('');
+  }
+}
+
 function bindEvents() {
   const modal = document.getElementById('app-modal');
   document.getElementById('app-modal-confirm').addEventListener('click', () => settleAppModal(true));
@@ -2356,6 +2436,11 @@ function bindEvents() {
   document.getElementById('save-citation-template-button').addEventListener('click', saveCitationTemplate);
   document.getElementById('add-custom-offense-button').addEventListener('click', addCustomOffense);
   document.getElementById('zkill-import-form').addEventListener('submit', importZkillRecord);
+  document.getElementById('export-all-data-button').addEventListener('click', exportAllData);
+  document.getElementById('import-all-data-button').addEventListener('click', () => {
+    document.getElementById('import-all-data-input').click();
+  });
+  document.getElementById('import-all-data-input').addEventListener('change', importAllData);
   document.getElementById('clear-pending-button').addEventListener('click', clearPending);
   document.getElementById('clear-all-data-button').addEventListener('click', eraseAllData);
 }
