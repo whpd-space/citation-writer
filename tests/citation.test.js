@@ -799,7 +799,7 @@ test('reads total value from the zKillboard killID response shape', () => {
   assert.equal(extractZkillValue([]), null);
 });
 
-test('submits a missing killmail to zKillboard and retries its appraisal', async () => {
+test('submits a killmail before requesting its zKillboard appraisal', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   let appraisalRequests = 0;
@@ -823,6 +823,7 @@ test('submits a missing killmail to zKillboard and retries its appraisal', async
     assert.equal(value, 42000000);
     assert.equal(appraisalRequests, 3);
     assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
+    assert.deepEqual(calls.map((call) => call.options.method || 'GET'), ['POST', 'GET', 'GET', 'GET']);
     assert.equal(
       calls.find((call) => call.options.method === 'POST').url,
       'https://zkillboard.com/api/killmail/add/136980595/baa8832d86d498781edbcc99363700213787f761/'
@@ -851,7 +852,29 @@ test('tries a submitted zKillboard appraisal five times before failing', async (
       /remained unavailable after 5 retries/
     );
     assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
-    assert.equal(calls.filter((call) => call.options.method !== 'POST').length, 6);
+    assert.equal(calls.filter((call) => call.options.method !== 'POST').length, 5);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('continues appraisal when zKillboard accepts a submission but returns 408 while processing', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (options.method === 'POST') return { ok: false, status: 408 };
+    return { ok: true, status: 200, json: async () => [{ zkb: { totalValue: 42000000 } }] };
+  };
+
+  try {
+    const value = await new ESIClient(null).zkillValue(
+      136980595,
+      'baa8832d86d498781edbcc99363700213787f761',
+      { retryDelay: 0 }
+    );
+    assert.equal(value, 42000000);
+    assert.deepEqual(calls.map((call) => call.options.method || 'GET'), ['POST', 'GET']);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1101,6 +1124,25 @@ test('offers manual zKillboard link import into the local pending queue', () => 
   assert.ok(app.includes('const imported = await esi.zkillKillmail(killmailId)'));
   assert.ok(app.includes("status: 'pending'"));
   assert.ok(app.includes("store.put('killmails', killmail)"));
+});
+
+test('submits and appraises missing zKillboard values during character sync', () => {
+  const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  const sync = app.slice(
+    app.indexOf('async function syncAllCharacters('),
+    app.indexOf('async function importZkillRecord(')
+  );
+
+  assert.ok(sync.includes('const appraisalCandidates = touched.filter('));
+  assert.ok(sync.includes('await ensureZkillValues(appraisalCandidates, { force: true, notifyFailure: false })'));
+});
+
+test('automatically syncs authorized characters every 303 seconds without overlapping an active sync', () => {
+  const app = readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+
+  assert.ok(app.includes('const AUTO_SYNC_INTERVAL_MS = 303 * 1000;'));
+  assert.ok(app.includes('if (!state.characters.length || !esi.isConfigured() || state.syncing) return;'));
+  assert.ok(app.includes('setInterval(runAutomaticSync, AUTO_SYNC_INTERVAL_MS)'));
 });
 
 test('offers killmail-free citation composition and records manual delivery in the ledger', () => {

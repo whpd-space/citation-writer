@@ -399,6 +399,11 @@ export class ESIClient {
       throw new Error('A valid killmail ID is required for zKillboard appraisal.');
     }
 
+    const normalizedHash = String(killmailHash || '').trim();
+    if (!/^[a-f0-9]{40}$/i.test(normalizedHash)) {
+      throw new Error('The killmail has no valid hash to submit to zKillboard.');
+    }
+
     const fetchValue = async () => {
       const response = await fetch(`https://zkillboard.com/api/killID/${normalizedId}/`, {
         headers: { Accept: 'application/json' },
@@ -408,30 +413,20 @@ export class ESIClient {
       return extractZkillValue(await response.json());
     };
 
-    let lastError;
-    try {
-      const totalValue = await fetchValue();
-      if (totalValue) return totalValue;
-      lastError = new Error('zKillboard did not return a total value for this killmail.');
-    } catch (error) {
-      lastError = error;
-    }
-
-    const normalizedHash = String(killmailHash || '').trim();
-    if (!/^[a-f0-9]{40}$/i.test(normalizedHash)) {
-      throw new Error('zKillboard appraisal was unavailable and the killmail has no valid hash to submit.');
-    }
-
     try {
       const response = await fetch(`https://zkillboard.com/api/killmail/add/${normalizedId}/${encodeURIComponent(normalizedHash)}/`, {
         method: 'POST',
         headers: { Accept: 'application/json' }
       });
-      if (!response.ok) throw new Error(`zKillboard killmail submission returned ${response.status}.`);
+      // zKillboard documents 408 as accepted but still processing.
+      if (!response.ok && response.status !== 408) {
+        throw new Error(`zKillboard killmail submission returned ${response.status}.`);
+      }
     } catch (error) {
-      lastError = error;
+      throw new Error(`Unable to submit killmail to zKillboard: ${error.message}`);
     }
 
+    let lastError;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, retryDelay));
       try {
