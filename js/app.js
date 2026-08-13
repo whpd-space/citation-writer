@@ -48,6 +48,7 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const ZKILL_RETRY_COOLDOWN = 5 * 60 * 1000;
+const AUTO_SYNC_INTERVAL_MS = 303 * 1000;
 
 const state = {
   characters: [],
@@ -797,7 +798,7 @@ async function ensureZkillValue(killmail, { force = false, notifyFailure = true 
 
 async function ensureZkillValues(killmails, { force = false, notifyFailure = true } = {}) {
   const records = [...(killmails || [])];
-  await Promise.all(records.map((killmail) => ensureZkillValue(killmail, { force, notifyFailure: false })));
+  await runPool(records, 4, (killmail) => ensureZkillValue(killmail, { force, notifyFailure: false }));
   const unavailable = records.some((killmail) => !killmail.totalValue);
   if (unavailable && notifyFailure) {
     await showAlert(
@@ -1412,6 +1413,11 @@ async function syncAllCharacters({ quiet = false } = {}) {
     await enrichKillmails(touched);
     await store.putMany('killmails', touched);
     state.killmails = [...existingById.values()].sort((a, b) => String(b.killmailTime || '').localeCompare(String(a.killmailTime || '')));
+    const appraisalCandidates = touched.filter((killmail) => !killmail.totalValue && killmail.hash);
+    if (appraisalCandidates.length) {
+      setWorking(`Submitting ${appraisalCandidates.length} to zKillboard`);
+      await ensureZkillValues(appraisalCandidates, { force: true, notifyFailure: false });
+    }
     if (!quiet) {
       showToast(`Intake complete. ${descriptors.size} unique combat ${descriptors.size === 1 ? 'record' : 'records'} reviewed.`);
     }
@@ -2546,6 +2552,14 @@ async function beginLogin() {
   }
 }
 
+function runAutomaticSync() {
+  if (!state.characters.length || !esi.isConfigured() || state.syncing) return;
+  syncAllCharacters({ quiet: true }).catch((error) => {
+    console.error(error);
+    showAlert(`Automatic intake failed: ${error.message}`, { title: 'Automatic intake failed', tone: 'danger' });
+  });
+}
+
 async function init() {
   bindEvents();
   await loadState();
@@ -2559,12 +2573,8 @@ async function init() {
   }
 
   const newestSync = state.killmails.reduce((latest, killmail) => Math.max(latest, Number(killmail.lastSeenAt || 0)), 0);
-  if (state.characters.length && esi.isConfigured() && Date.now() - newestSync > 5 * 60 * 1000) {
-    syncAllCharacters({ quiet: true }).catch((error) => {
-      console.error(error);
-      showAlert(`Automatic intake failed: ${error.message}`, { title: 'Automatic intake failed', tone: 'danger' });
-    });
-  }
+  if (Date.now() - newestSync > AUTO_SYNC_INTERVAL_MS) runAutomaticSync();
+  setInterval(runAutomaticSync, AUTO_SYNC_INTERVAL_MS);
 }
 
 init().catch((error) => {
