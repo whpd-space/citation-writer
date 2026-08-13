@@ -1,6 +1,7 @@
 import { APP_CONFIG } from './config.js';
 
 const OAUTH_PREFIX = 'whpd:oauth:';
+const ZKILL_SUBMISSION_INTERVAL_MS = 1000;
 const UNCONFIGURED_CLIENT_IDS = new Set([
   '',
   '--LOCAL-CLIENT-ID--',
@@ -175,6 +176,19 @@ export function isInvalidCharacterGrant(error) {
 export class ESIClient {
   constructor(store) {
     this.store = store;
+    this.zkillSubmissionQueue = Promise.resolve();
+    this.lastZkillSubmissionAt = 0;
+  }
+
+  async queueZkillSubmission(submit, interval = ZKILL_SUBMISSION_INTERVAL_MS) {
+    const queued = this.zkillSubmissionQueue.then(async () => {
+      const wait = Math.max(0, this.lastZkillSubmissionAt + interval - Date.now());
+      if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastZkillSubmissionAt = Date.now();
+      return submit();
+    });
+    this.zkillSubmissionQueue = queued.catch(() => {});
+    return queued;
   }
 
   get clientId() {
@@ -393,7 +407,10 @@ export class ESIClient {
     };
   }
 
-  async zkillValue(killmailId, killmailHash = '', { retryDelay = 3000 } = {}) {
+  async zkillValue(killmailId, killmailHash = '', {
+    retryDelay = 3000,
+    submissionInterval = ZKILL_SUBMISSION_INTERVAL_MS
+  } = {}) {
     const normalizedId = Number(killmailId);
     if (!Number.isSafeInteger(normalizedId) || normalizedId <= 0) {
       throw new Error('A valid killmail ID is required for zKillboard appraisal.');
@@ -414,10 +431,13 @@ export class ESIClient {
     };
 
     try {
-      const response = await fetch(`https://zkillboard.com/api/killmail/add/${normalizedId}/${encodeURIComponent(normalizedHash)}/`, {
-        method: 'POST',
-        headers: { Accept: 'application/json' }
-      });
+      const response = await this.queueZkillSubmission(
+        () => fetch(`https://zkillboard.com/api/killmail/add/${normalizedId}/${encodeURIComponent(normalizedHash)}/`, {
+          method: 'POST',
+          headers: { Accept: 'application/json' }
+        }),
+        submissionInterval
+      );
       // zKillboard documents 408 as accepted but still processing.
       if (!response.ok && response.status !== 408) {
         throw new Error(`zKillboard killmail submission returned ${response.status}.`);

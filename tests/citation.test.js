@@ -880,6 +880,32 @@ test('continues appraisal when zKillboard accepts a submission but returns 408 w
   }
 });
 
+test('queues zKillboard submissions one at a time at the configured interval', async () => {
+  const originalFetch = globalThis.fetch;
+  const postTimes = [];
+  globalThis.fetch = async (_url, options = {}) => {
+    if (options.method === 'POST') {
+      postTimes.push(Date.now());
+      return { ok: true, status: 200 };
+    }
+    return { ok: true, status: 200, json: async () => [{ zkb: { totalValue: 42000000 } }] };
+  };
+
+  try {
+    const client = new ESIClient(null);
+    await Promise.all([
+      client.zkillValue(136980595, 'baa8832d86d498781edbcc99363700213787f761', { retryDelay: 0, submissionInterval: 20 }),
+      client.zkillValue(136980596, 'caa8832d86d498781edbcc99363700213787f762', { retryDelay: 0, submissionInterval: 20 }),
+      client.zkillValue(136980597, 'daa8832d86d498781edbcc99363700213787f763', { retryDelay: 0, submissionInterval: 20 })
+    ]);
+    assert.equal(postTimes.length, 3);
+    assert.ok(postTimes[1] - postTimes[0] >= 18);
+    assert.ok(postTimes[2] - postTimes[1] >= 18);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('parses zKillboard links and validates complete killmail import responses', () => {
   assert.equal(parseZkillKillmailId('https://zkillboard.com/kill/136980595/'), 136980595);
   assert.equal(parseZkillKillmailId('https://www.zkillboard.com/kill/136980595?foo=bar'), 136980595);
