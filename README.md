@@ -23,6 +23,7 @@ Open the app at [cw.whpd.space](https://cw.whpd.space).
 - Provides the full WHPD Legal Library as an alphabetical checklist.
 - Supports your own custom misdemeanors and felonies.
 - Provides reusable citation templates with user-defined, ordered sections and composer boxes.
+- Lets you restyle or replace the complete EVE Mail body with safe HTML while keeping subjects plain text.
 - Keeps WHPD Squizz Standard and WHPD Minimal available as protected built-in templates.
 - Supports Officer, Deputy, Fleet, and Memefleet attribution.
 - Sends Fleet and Memefleet citation copies to every involved capsuleer attacker.
@@ -48,7 +49,7 @@ Settings lets you:
 
 ## Templates
 
-The Templates tab lets you create, review, edit, and remove citation templates. Each template defines a required subject format, ordered sections, EVE HTML layout, optionality, and whether it creates a paragraph, bullet-list, or fixed section. Every draft receives a required, editable subject generated from its template. WHPD Squizz Standard remains the default, while WHPD Minimal provides a one-line citation with no extra composer boxes. Both built-ins can be edited but cannot be removed.
+The Templates tab lets you create, review, edit, and remove citation templates. Each template defines a required plain-text subject format, ordered sections, EVE HTML layout, optionality, and whether it creates a paragraph, bullet-list, or fixed section. Every draft receives a required, editable subject generated from its template. In the composer, the complete generated message body can also be styled or replaced with safe EVE HTML, including fixed template content. WHPD Squizz Standard remains the default, while WHPD Minimal provides a one-line citation with no extra composer boxes. Both built-ins can be edited but cannot be removed.
 
 ## Your data
 

@@ -32,6 +32,8 @@ Felonies 4. `===` 5. Evidence 6. `===` 7. Disposition Summary 8. `===`
 -   No markdown inside the citation body.
 -   Bullets use `-` only.
 -   Keep bullet lines directly adjacent with no blank lines.
+-   Do not apply `<font>` colors or color styles to links. EVE renders links
+    yellow and underlined.
 
 ## 6. Colors
 
@@ -40,7 +42,7 @@ Felonies 4. `===` 5. Evidence 6. `===` 7. Disposition Summary 8. `===`
 -   Officer names: green.
 -   Charge codes: green.
 -   System names and ISK values: `#ff007fff`.
--   Misdemeanors & Felonies header: red and bold.
+-   Misdemeanors & Felonies header: linked and bold, with no explicit color.
 -   Evidence, Disposition Summary, Final WHPD Note, and WHPD Disclaimer
     headers: `#ff007fff` and bold.
 -   Footer colors remain exactly as specified.
@@ -75,7 +77,7 @@ value - Humor based on the circumstances
 Header:
 
 ``` html
-<a href="https://whpd.space/LegalLibrary.html"><font color="red"><b>Misdemeanors & Felonies:</b></font></a>
+<a href="https://whpd.space/LegalLibrary.html"><b>Misdemeanors & Felonies:</b></a>
 ```
 
 -   Use believable IUS codes.
@@ -134,7 +136,7 @@ Body:
 ## 16. Fixed footer
 
 ``` html
-<font color="#ffffff"><a href="showinfo:16159//99010102">The Wormhole Police</a></font> ( <a href="https://whpd.space">Website</a> )<br><font color="#ffffffff">"</font><font color="#ff00ff00">Decloak</font><font color="#ffffffff">. </font><font color="#ffff0000">Detain</font><font color="#ffffffff">. </font><font color="#ffffff00">Discipline!</font><font color="#ffffffff">"</font>
+<a href="showinfo:16159//99010102">The Wormhole Police</a> ( <a href="https://whpd.space">Website</a> )<br><font color="#ffffffff">"</font><font color="#ff00ff00">Decloak</font><font color="#ffffffff">. </font><font color="#ffff0000">Detain</font><font color="#ffffffff">. </font><font color="#ffffff00">Discipline!</font><font color="#ffffffff">"</font>
 ```
 
 ## 17. Style notes
