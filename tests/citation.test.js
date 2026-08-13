@@ -10,6 +10,7 @@ import {
   CITATION_HEADERS,
   citationTemplateUsesOffenses,
   citationTemplates,
+  compactCitationHtml,
   DEFAULT_CITATION_TEMPLATE,
   DEFAULT_CITATION_TEMPLATE_ID,
   DEFAULT_CITATION_SECTION_IDS,
@@ -21,11 +22,13 @@ import {
   buildCitation,
   chargesForOffenses,
   cleanCitationText,
+  cleanCitationSubject,
   formatIsk,
   formatShipTypeCounts,
   LEGAL_OFFENSES,
   makeCitationDraft,
   makeManualCitationDraft,
+  sanitizeCitationHtml,
   sortOffensesAlphabetically,
   validateCitation
 } from '../js/citation.js';
@@ -84,6 +87,22 @@ test('builds the exact subject prefix and required ordered sections', () => {
   assert.ok(!narrativeText.includes('Officer Officer Example'));
 });
 
+test('combines adjacent font runs with the same styling', () => {
+  const narrative = buildCitation(completeDraft).body.split('\n\n===')[0];
+
+  assert.ok(narrative.startsWith(
+    '<font color="white">Pilot Definitely Innocent of Totally Legal Ventures, operating under Nothing Suspicious, was detained in </font>'
+  ));
+  assert.ok(narrative.includes(
+    '<font color="green">Officer Example</font><font color="white"> arrived in their Loki and dismantled the suspect&#039;s Venture, assessed at </font>'
+  ));
+  assert.equal((narrative.match(/<font color="white">/g) || []).length, 4);
+  assert.equal(
+    compactCitationHtml('<font color="white" size="3">One</font> <font size="3" color="white">Two</font><font color="red">Three</font>'),
+    '<font color="white" size="3">One Two</font><font color="red">Three</font>'
+  );
+});
+
 test('uses only the citation rule block HTML tags', () => {
   const { body } = buildCitation(completeDraft);
   const tags = [...body.matchAll(/<\/?([a-z0-9]+)\b[^>]*>/gi)].map((match) => match[1].toLowerCase());
@@ -97,6 +116,19 @@ test('keeps the standard template disclaimer and footer unchanged', () => {
   const { body } = buildCitation(completeDraft);
   assert.ok(body.includes('<font color="white">If you\'re taking any of this seriously you\'re doing it wrong!</font>'));
   assert.ok(body.endsWith(CITATION_FOOTER));
+});
+
+test('leaves links uncolored for EVE\'s yellow underlined link style', () => {
+  const { body } = buildCitation(completeDraft);
+  const links = [...body.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/gi)].map((match) => match[0]);
+
+  assert.ok(links.length >= 3);
+  links.forEach((link) => {
+    assert.doesNotMatch(link, /<\/?font\b/i);
+    assert.doesNotMatch(link, /(?:^|[;\s"])(?:color|background-color)\s*:/i);
+  });
+  assert.ok(body.includes('<a href="https://whpd.space/LegalLibrary.html"><b>Misdemeanors & Felonies:</b></a>'));
+  assert.ok(body.includes('<a href="showinfo:16159//99010102">The Wormhole Police</a>'));
 });
 
 test('matches the fixed blocks in citation.md without changing the rule file', () => {
@@ -277,6 +309,50 @@ test('sanitizes unsafe HTML in user-defined section layouts', () => {
   assert.ok(!body.includes('href="javascript:'));
   assert.ok(body.includes('&lt;script&gt;'));
   assert.ok(body.includes('Safe citation copy.'));
+});
+
+test('allows rich styling throughout the message body while keeping the subject plain', () => {
+  const styledSection = applyCitationTemplate({ ...completeDraft, sourceKillmailIds: [123] }, {
+    id: 'template-styled-message',
+    name: 'Styled message',
+    subject: '<b>Styled</b> {{pilotName}}',
+    sections: [{
+      id: 'styled-section',
+      name: 'Styled section',
+      body: '<h2 style="color: red; text-align: center">Notice</h2>\n{{content}}',
+      editor: 'text',
+      defaultValue: '<i><u>{{pilotName}}</u></i> received <font color="#12abef" size="4" face="Arial">notice</font>.',
+      optional: false
+    }]
+  }, () => 0);
+  const citation = buildCitation(styledSection);
+
+  assert.equal(citation.subject, 'Styled Definitely Innocent');
+  assert.ok(citation.body.includes('<h2 style="color: red; text-align: center">Notice</h2>'));
+  assert.ok(citation.body.includes('<i><u>Definitely Innocent</u></i>'));
+  assert.ok(citation.body.includes('<font color="#12abef" size="4" face="Arial">notice</font>'));
+  assert.equal(cleanCitationSubject('<font color="red"><b>Plain subject</b></font>'), 'Plain subject');
+});
+
+test('uses a safe full-body override without allowing executable markup', () => {
+  const body = '<div style="background-color: #112233; font-size: 18px"><strong>Custom body</strong></div>'
+    + '<a href="javascript:alert(1)" onclick="alert(2)">unsafe link</a><script>alert(3)</script>'
+    + '<a href="https://example.com" style="color: red; font-weight: bold"><font color="white">Styled link</font></a>'
+    + '<font color="green"><a href="https://example.com/other">Other link</a></font>';
+  const citation = buildCitation({ ...completeDraft, subject: '<i>Plain only</i>', body });
+
+  assert.equal(citation.subject, 'Plain only');
+  assert.ok(citation.body.includes('<div style="background-color: #112233; font-size: 18px">'));
+  assert.ok(citation.body.includes('<strong>Custom body</strong>'));
+  assert.ok(!citation.body.includes('javascript:'));
+  assert.ok(!citation.body.includes('onclick='));
+  assert.ok(!citation.body.includes('<script>'));
+  assert.ok(citation.body.includes('&lt;script&gt;'));
+  assert.ok(citation.body.includes('<a href="https://example.com" style="font-weight: bold">Styled link</a>'));
+  assert.ok(citation.body.includes('<a href="https://example.com/other">Other link</a>'));
+  assert.ok(!citation.body.includes('<font color="green"><a'));
+  assert.equal(sanitizeCitationHtml('<span style="color: #abc; position: fixed">Safe</span>'), '<span style="color: #abc">Safe</span>');
+  assert.ok(validateCitation({ ...completeDraft, body: '' }).includes('EVE Mail body is required.'));
 });
 
 test('creates a complete draft from an enriched killmail', () => {
@@ -964,7 +1040,8 @@ test('formats every grouped record as an in-game killmail link followed by a zki
   const renderedText = body.replace(/<[^>]+>/g, '');
   assert.ok(renderedText.includes('- Repeat Customer Venture (zkill)'));
   assert.ok(renderedText.includes('- Second Customer Capsule (zkill)'));
-  assert.equal((body.match(/<font color="white">zkill<\/font>/g) || []).length, 2);
+  assert.equal((body.match(/<font color="white">zkill<\/font>/g) || []).length, 0);
+  assert.equal((body.match(/>zkill<\/a>/g) || []).length, 2);
   assert.ok(!body.includes('J123456 - zKillboard'));
 });
 
@@ -1094,6 +1171,10 @@ test('provides browser-local template CRUD and applies templates in the citation
   assert.ok(app.includes('data-draft-section-id='));
   assert.ok(app.includes('data-draft-field="subject"'));
   assert.ok(app.includes('Required. Initially generated by the selected template'));
+  assert.ok(app.includes('id="citation-body-editor"'));
+  assert.ok(app.includes('data-action="format-body"'));
+  assert.ok(app.includes('The subject always remains plain text.'));
+  assert.ok(app.includes('delete state.draft.body'));
   assert.ok(app.includes('citationTemplateUsesOffenses(draftTemplate)'));
   assert.ok(app.includes('const offenseSelection = usesOffenseSelection'));
   assert.ok(!app.includes('<span>Activity · select offenses'));

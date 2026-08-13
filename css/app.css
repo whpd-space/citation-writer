@@ -963,6 +963,63 @@ a:hover {
   font-size: 0.68rem;
 }
 
+.citation-body-editor-field {
+  margin-top: 0.9rem;
+  padding: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--cyan) 38%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--cyan) 5%, var(--input));
+}
+
+.citation-body-editor-field > textarea {
+  min-height: 260px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  tab-size: 2;
+}
+
+.citation-body-editor-field > small {
+  display: block;
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.citation-body-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-bottom: 0.45rem;
+}
+
+.citation-body-toolbar .button {
+  min-width: 30px;
+}
+
+.citation-body-toolbar [data-action="reset-body"] {
+  margin-left: auto;
+}
+
+.citation-body-color-control {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: 0.2rem;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.composer-form .citation-body-color-control input[type="color"] {
+  width: 30px;
+  height: 26px;
+  padding: 2px;
+  cursor: pointer;
+}
+
 .citation-recipients-field {
   margin-bottom: 0.75rem;
   padding: 0.65rem;

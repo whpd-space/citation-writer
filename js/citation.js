@@ -1,7 +1,7 @@
-export const CITATION_FOOTER = '<font color="#ffffff"><a href="showinfo:16159//99010102">The Wormhole Police</a></font> ( <a href="https://whpd.space">Website</a> )<br><font color="#ffffffff">"</font><font color="#ff00ff00">Decloak</font><font color="#ffffffff">. </font><font color="#ffff0000">Detain</font><font color="#ffffffff">. </font><font color="#ffffff00">Discipline!</font><font color="#ffffffff">"</font>';
+export const CITATION_FOOTER = '<a href="showinfo:16159//99010102">The Wormhole Police</a> ( <a href="https://whpd.space">Website</a> )<br><font color="#ffffffff">"</font><font color="#ff00ff00">Decloak</font><font color="#ffffffff">. </font><font color="#ffff0000">Detain</font><font color="#ffffffff">. </font><font color="#ffffff00">Discipline!</font><font color="#ffffffff">"</font>';
 
 export const CITATION_HEADERS = Object.freeze({
-  charges: '<a href="https://whpd.space/LegalLibrary.html"><font color="red"><b>Misdemeanors & Felonies:</b></font></a>',
+  charges: '<a href="https://whpd.space/LegalLibrary.html"><b>Misdemeanors & Felonies:</b></a>',
   evidence: '<font color="#ff007fff"><b>Evidence:</b></font>',
   officerComments: '<font color="#ff007fff"><b>Officer Comments:</b></font>',
   note: '<font color="#ff007fff"><b>Final WHPD Note:</b></font>',
@@ -144,6 +144,10 @@ export function cleanCitationText(value) {
     .trim();
 }
 
+export function cleanCitationSubject(value) {
+  return cleanCitationText(value).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
 export function escapeHtml(value) {
   return withoutEmoji(String(value ?? ''))
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
@@ -159,6 +163,10 @@ export function escapeHtml(value) {
 
 function font(color, value) {
   return `<font color="${color}">${escapeHtml(value)}</font>`;
+}
+
+function styledFont(color, value) {
+  return `<font color="${color}">${sanitizeCitationHtml(value)}</font>`;
 }
 
 function white(value) {
@@ -240,7 +248,7 @@ function openingNarrative(data, humor = data.humor) {
     white(', assessed at '),
     magenta(data.totalValue),
     white('. '),
-    white(humor)
+    styledFont('white', humor)
   );
 
   return parts.join('');
@@ -257,7 +265,11 @@ function chargeBullets(charges) {
 }
 
 function whiteBullets(items, fallback) {
-  return normalizedList(items, fallback).map((item) => `- ${white(item)}`);
+  const styledItems = (Array.isArray(items) ? items : [])
+    .map((item) => sanitizeCitationHtml(item))
+    .filter(hasCitationHtmlText);
+  return (styledItems.length ? styledItems : [escapeHtml(fallback)])
+    .map((item) => `- ${styledFont('white', item)}`);
 }
 
 function evidenceBullets(data, evidence = data.evidence) {
@@ -271,9 +283,9 @@ function evidenceBullets(data, evidence = data.evidence) {
     const label = cleanCitationText(record?.label) || 'zKillboard combat record';
     const killReportUrl = safeKillReportUrl(record?.killmailId, record?.killmailHash);
     const killmailLabel = killReportUrl
-      ? `<a href="${escapeHtml(killReportUrl)}">${white(label)}</a>`
+      ? `<a href="${escapeHtml(killReportUrl)}">${escapeHtml(label)}</a>`
       : white(label);
-    bullets.push(`- ${killmailLabel} (<a href="${escapeHtml(zkillUrl)}">${white('zkill')}</a>)`);
+    bullets.push(`- ${killmailLabel} (<a href="${escapeHtml(zkillUrl)}">zkill</a>)`);
   });
   return bullets;
 }
@@ -321,10 +333,14 @@ export function validateCitation(data) {
 
   const values = citationSectionValues(data, template);
   template.sections.forEach((section) => {
-    if (section.editor !== 'none' && !section.optional && !cleanCitationText(values[section.id])) {
+    if (section.editor !== 'none' && !section.optional && !hasCitationHtmlText(values[section.id])) {
       errors.push(`${section.name} is required.`);
     }
   });
+
+  if (Object.prototype.hasOwnProperty.call(data || {}, 'body') && !hasCitationHtmlText(sanitizeCitationHtml(data.body))) {
+    errors.push('EVE Mail body is required.');
+  }
 
   return errors;
 }
@@ -334,10 +350,13 @@ export function buildCitation(data) {
   const subject = citationSubject(data, template);
   const values = citationSectionValues(data, template);
   const sections = template.sections
-    .filter((section) => !(section.optional && !cleanCitationText(values[section.id])))
+    .filter((section) => !(section.optional && !hasCitationHtmlText(values[section.id])))
     .map((section) => renderCitationSection(section, data, values[section.id]));
 
-  const body = sections.join('\n\n===\n\n');
+  const generatedBody = sections.join('\n\n===\n\n');
+  const body = compactCitationHtml(unstyleCitationLinks(Object.prototype.hasOwnProperty.call(data || {}, 'body')
+    ? sanitizeCitationHtml(data.body)
+    : generatedBody));
 
   return { subject, body };
 }
@@ -646,22 +665,197 @@ function cleanTemplateText(value, maximumLength = 4000) {
     .slice(0, maximumLength);
 }
 
-function cleanTemplateBody(value, maximumLength = 12000) {
+const STYLED_CITATION_TAGS = new Set([
+  'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'sub', 'sup', 'br',
+  'p', 'div', 'span', 'blockquote', 'pre', 'code', 'ul', 'ol', 'li',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'font', 'a'
+]);
+
+function safeCitationHref(value) {
+  const href = String(value || '').trim();
+  return /^(?:https?:\/\/[^\s"'<>]+|showinfo:\d+\/\/\d+|killReport:\d+:[a-f0-9]{40})$/i.test(href)
+    ? href
+    : '';
+}
+
+function safeCitationColor(value) {
+  const color = String(value || '').trim();
+  return /^(?:#[a-f0-9]{3,8}|[a-z]{3,24}|rgba?\(\s*[\d.%]+\s*,\s*[\d.%]+\s*,\s*[\d.%]+(?:\s*,\s*[\d.]+)?\s*\))$/i.test(color)
+    ? color
+    : '';
+}
+
+function safeCitationStyle(value) {
+  const validators = {
+    color: safeCitationColor,
+    'background-color': safeCitationColor,
+    'font-family': (item) => (/^[a-z0-9 ,.'"-]{1,100}$/i.test(item) ? item : ''),
+    'font-size': (item) => (/^(?:\d+(?:\.\d+)?(?:px|pt|em|rem|%)|xx?-small|small|medium|large|x-large|xx-large)$/i.test(item) ? item : ''),
+    'font-style': (item) => (/^(?:normal|italic|oblique)$/i.test(item) ? item : ''),
+    'font-weight': (item) => (/^(?:normal|bold|bolder|lighter|[1-9]00)$/i.test(item) ? item : ''),
+    'text-align': (item) => (/^(?:left|right|center|justify)$/i.test(item) ? item : ''),
+    'text-decoration': (item) => (/^(?:none|underline|line-through|overline)(?:\s+(?:underline|line-through|overline))*$/i.test(item) ? item : ''),
+    'white-space': (item) => (/^(?:normal|nowrap|pre|pre-wrap|pre-line)$/i.test(item) ? item : '')
+  };
+  return String(value || '')
+    .split(';')
+    .map((declaration) => declaration.trim())
+    .filter(Boolean)
+    .map((declaration) => {
+      const separator = declaration.indexOf(':');
+      if (separator === -1) return '';
+      const property = declaration.slice(0, separator).trim().toLowerCase();
+      const item = declaration.slice(separator + 1).trim();
+      const safe = validators[property]?.(item) || '';
+      return safe ? `${property}: ${safe}` : '';
+    })
+    .filter(Boolean)
+    .join('; ');
+}
+
+function citationTagAttributes(source) {
+  const attributes = [];
+  const matcher = /([a-z][a-z0-9-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+  let cursor = 0;
+  let match;
+  while ((match = matcher.exec(source))) {
+    if (source.slice(cursor, match.index).trim()) return null;
+    attributes.push([match[1].toLowerCase(), match[2] ?? match[3] ?? match[4] ?? '']);
+    cursor = matcher.lastIndex;
+  }
+  return source.slice(cursor).replace(/\/?\s*$/, '').trim() ? null : attributes;
+}
+
+function fontTagSignature(source) {
+  const match = String(source).match(/^<\s*font\b([^>]*)>$/i);
+  if (!match) return '';
+  const attributes = citationTagAttributes(match[1]);
+  if (!attributes) return '';
+  return attributes
+    .map(([name, value]) => `${name.toLowerCase()}=${value.toLowerCase()}`)
+    .sort()
+    .join(';');
+}
+
+export function compactCitationHtml(value) {
+  const tokens = String(value ?? '').match(/<[^>]*>|[^<]+/g) || [];
+  const output = [];
+  const stack = [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const closing = token.match(/^<\s*\/\s*([a-z0-9]+)\s*>$/i);
+    if (closing) {
+      const name = closing[1].toLowerCase();
+      const active = stack[stack.length - 1];
+      if (name === 'font' && active?.name === 'font') {
+        let nextIndex = index + 1;
+        let spacing = '';
+        while (nextIndex < tokens.length && !tokens[nextIndex].startsWith('<') && !tokens[nextIndex].trim()) {
+          spacing += tokens[nextIndex];
+          nextIndex += 1;
+        }
+        const nextSignature = fontTagSignature(tokens[nextIndex]);
+        if (nextSignature && nextSignature === active.signature) {
+          output.push(spacing);
+          index = nextIndex;
+          continue;
+        }
+      }
+      output.push(token);
+      if (active?.name === name) stack.pop();
+      continue;
+    }
+
+    const opening = token.match(/^<\s*([a-z0-9]+)\b[^>]*>$/i);
+    if (opening && opening[1].toLowerCase() !== 'br') {
+      const name = opening[1].toLowerCase();
+      stack.push({ name, signature: name === 'font' ? fontTagSignature(token) : '' });
+    }
+    output.push(token);
+  }
+
+  return output.join('');
+}
+
+export function unstyleCitationLinks(value) {
+  let output = String(value ?? '').replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, (link) => link
+    .replace(/<\/?font\b[^>]*>/gi, '')
+    .replace(/\sstyle="([^"]*)"/gi, (_attribute, style) => {
+      const uncolored = style
+        .split(';')
+        .map((declaration) => declaration.trim())
+        .filter(Boolean)
+        .filter((declaration) => !/^(?:color|background-color)\s*:/i.test(declaration))
+        .join('; ');
+      return uncolored ? ` style="${uncolored}"` : '';
+    }));
+
+  let prior;
+  do {
+    prior = output;
+    output = output.replace(/<font\b[^>]*>\s*(<a\b[^>]*>[\s\S]*?<\/a>)\s*<\/font>/gi, '$1');
+  } while (output !== prior);
+  return output;
+}
+
+function sanitizeCitationTag(source) {
+  const match = String(source).match(/^<\s*(\/?)\s*([a-z0-9]+)([^>]*)>$/i);
+  if (!match) return escapeHtml(source);
+  const closing = Boolean(match[1]);
+  const name = match[2].toLowerCase();
+  if (!STYLED_CITATION_TAGS.has(name)) return escapeHtml(source);
+  if (closing) return match[3].trim() || name === 'br' ? escapeHtml(source) : `</${name}>`;
+  if (name === 'br') return /^\s*\/?\s*$/.test(match[3]) ? '<br>' : escapeHtml(source);
+
+  const attributes = citationTagAttributes(match[3]);
+  if (!attributes) return escapeHtml(source);
+  const safe = [];
+  for (const [attribute, value] of attributes) {
+    if (attribute === 'style') {
+      const style = safeCitationStyle(value);
+      if (style) safe.push(`style="${escapeHtml(style)}"`);
+      continue;
+    }
+    if (name === 'a' && attribute === 'href') {
+      const href = safeCitationHref(value);
+      if (href) safe.push(`href="${escapeHtml(href)}"`);
+      continue;
+    }
+    if (name === 'a' && attribute === 'title') {
+      const title = cleanCitationText(value).slice(0, 300);
+      if (title) safe.push(`title="${escapeHtml(title)}"`);
+      continue;
+    }
+    if (name === 'font' && attribute === 'color') {
+      const color = safeCitationColor(value);
+      if (color) safe.push(`color="${escapeHtml(color)}"`);
+      continue;
+    }
+    if (name === 'font' && attribute === 'size' && /^(?:[1-7]|[+-][1-7])$/.test(value.trim())) {
+      safe.push(`size="${escapeHtml(value.trim())}"`);
+      continue;
+    }
+    if (name === 'font' && attribute === 'face' && /^[a-z0-9 ,.'-]{1,100}$/i.test(value.trim())) {
+      safe.push(`face="${escapeHtml(value.trim())}"`);
+      continue;
+    }
+  }
+  return `<${name}${safe.length ? ` ${safe.join(' ')}` : ''}>`;
+}
+
+export function sanitizeCitationHtml(value, maximumLength = 12000) {
   const clean = withoutEmoji(String(value ?? ''))
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .replace(/[—–]/g, '-')
     .replace(/\r\n?/g, '\n')
     .trim()
     .slice(0, maximumLength);
-  const allowedTag = (tag) => (
-    /^<\/?b>$/i.test(tag)
-    || /^<br\s*\/?>$/i.test(tag)
-    || /^<\/font>$/i.test(tag)
-    || /^<font color="(?:#[a-f0-9]{6,8}|red|white|green)">$/i.test(tag)
-    || /^<\/a>$/i.test(tag)
-    || /^<a href="(?:https:\/\/[^"<>\s]+|showinfo:\d+\/\/\d+)">$/i.test(tag)
-  );
-  return clean.replace(/<[^>]*>|[<>]/g, (tag) => (allowedTag(tag) ? tag : escapeHtml(tag)));
+  return unstyleCitationLinks(clean.replace(/<[^>]*>|[<>]/g, sanitizeCitationTag));
+}
+
+function hasCitationHtmlText(value) {
+  return Boolean(cleanCitationText(String(value ?? '').replace(/<[^>]*>/g, ' ')));
 }
 
 function legacyTemplateSections(value) {
@@ -682,7 +876,7 @@ function legacyTemplateSections(value) {
 export function normalizeCitationSection(value) {
   const id = cleanCitationText(value?.id).toLowerCase();
   const name = cleanCitationText(value?.name).slice(0, 100);
-  const body = cleanTemplateBody(value?.body);
+  const body = sanitizeCitationHtml(value?.body);
   const editor = ['none', 'text', 'list'].includes(value?.editor) ? value.editor : 'none';
   if (!/^[a-z0-9][a-z0-9-]{2,127}$/.test(id) || !name || !body) return null;
   return {
@@ -690,7 +884,7 @@ export function normalizeCitationSection(value) {
     name,
     body,
     editor,
-    defaultValue: editor === 'none' ? '' : cleanTemplateText(value?.defaultValue),
+    defaultValue: editor === 'none' ? '' : sanitizeCitationHtml(value?.defaultValue, 4000),
     optional: editor === 'none' ? false : Boolean(value?.optional)
   };
 }
@@ -698,7 +892,7 @@ export function normalizeCitationSection(value) {
 export function normalizeCitationTemplate(value) {
   const id = cleanCitationText(value?.id).toLowerCase();
   const name = cleanCitationText(value?.name).slice(0, 80);
-  const subject = cleanTemplateText(value?.subject ?? DEFAULT_CITATION_TEMPLATE.subject, 300);
+  const subject = cleanCitationSubject(value?.subject ?? DEFAULT_CITATION_TEMPLATE.subject).slice(0, 300);
   if (!/^[a-z0-9][a-z0-9-]{2,127}$/.test(id) || !name || !subject) return null;
   const sourceSections = Array.isArray(value?.sections) ? value.sections : legacyTemplateSections(value);
   const sections = sourceSections.map(normalizeCitationSection).filter(Boolean);
@@ -770,12 +964,12 @@ function renderCitationSubject(value, data) {
 
 function citationSubject(data, template = templateForCitation(data)) {
   if (Object.prototype.hasOwnProperty.call(data || {}, 'subject')) {
-    return cleanCitationText(data.subject).slice(0, 132);
+    return cleanCitationSubject(data.subject).slice(0, 132);
   }
-  if (cleanCitationText(data?.subjectOverride)) {
-    return cleanCitationText(data.subjectOverride).slice(0, 132);
+  if (cleanCitationSubject(data?.subjectOverride)) {
+    return cleanCitationSubject(data.subjectOverride).slice(0, 132);
   }
-  return cleanCitationText(renderCitationSubject(template.subject, data)).slice(0, 132);
+  return cleanCitationSubject(renderCitationSubject(template.subject, data)).slice(0, 132);
 }
 
 function defaultEvidenceForDraft(draft) {
@@ -806,8 +1000,8 @@ function plainTemplateReplacements(draft, random = Math.random) {
 function listFromSectionValue(value) {
   return String(value ?? '')
     .split(/\r?\n/)
-    .map(cleanCitationText)
-    .filter(Boolean);
+    .map((item) => sanitizeCitationHtml(item))
+    .filter(hasCitationHtmlText);
 }
 
 function templateForCitation(data) {
@@ -824,13 +1018,17 @@ function citationSectionValues(data, template = templateForCitation(data)) {
   };
   return Object.fromEntries(template.sections.map((section) => [
     section.id,
-    cleanTemplateText(Object.prototype.hasOwnProperty.call(supplied, section.id) ? supplied[section.id] : legacy[section.id])
+    sanitizeCitationHtml(
+      Object.prototype.hasOwnProperty.call(supplied, section.id) ? supplied[section.id] : legacy[section.id],
+      4000
+    )
   ]));
 }
 
 function renderCitationSection(section, data, sectionValue = '') {
   const items = listFromSectionValue(sectionValue);
   const scalar = (value) => escapeHtml(cleanCitationText(value));
+  const styled = (value) => sanitizeCitationHtml(value);
   const replacements = {
     pilotName: scalar(data.pilotName),
     corporationName: scalar(data.corporationName),
@@ -844,12 +1042,12 @@ function renderCitationSection(section, data, sectionValue = '') {
     openingNarrative: openingNarrative(data, sectionValue),
     charges: chargeBullets(data.charges).join('\n'),
     evidence: evidenceBullets(data, items).join('\n'),
-    content: scalar(sectionValue),
-    contentWhite: white(sectionValue),
+    content: styled(sectionValue),
+    contentWhite: styledFont('white', sectionValue),
     contentBullets: whiteBullets(items, '').join('\n'),
     officerComments: whiteBullets(items, '').join('\n'),
-    finalNote: white(sectionValue),
-    humor: scalar(sectionValue)
+    finalNote: styledFont('white', sectionValue),
+    humor: styled(sectionValue)
   };
   return section.body.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9]*)\s*\}\}/g, (token, key) => (
     Object.prototype.hasOwnProperty.call(replacements, key) ? replacements[key] : token
@@ -857,20 +1055,21 @@ function renderCitationSection(section, data, sectionValue = '') {
 }
 
 export function applyCitationTemplate(draft, template = DEFAULT_CITATION_TEMPLATE, random = Math.random) {
+  const { body: _customBody, ...baseDraft } = draft || {};
   const normalized = normalizeCitationTemplate(template) || normalizeCitationTemplate(DEFAULT_CITATION_TEMPLATE);
-  const replacements = plainTemplateReplacements(draft, random);
+  const replacements = plainTemplateReplacements(baseDraft, random);
   const sectionValues = Object.fromEntries(normalized.sections.map((section) => [
     section.id,
-    section.editor === 'none' ? '' : renderTemplateText(section.defaultValue, replacements)
+    section.editor === 'none' ? '' : sanitizeCitationHtml(renderTemplateText(section.defaultValue, replacements), 4000)
   ]));
   const openingValue = sectionValues[DEFAULT_CITATION_SECTION_IDS.opening] || '';
   const evidence = listFromSectionValue(sectionValues[DEFAULT_CITATION_SECTION_IDS.evidence]);
   const officerComments = listFromSectionValue(sectionValues[DEFAULT_CITATION_SECTION_IDS.officerComments]);
   const finalNote = sectionValues[DEFAULT_CITATION_SECTION_IDS.finalNote] || '';
-  const subject = cleanCitationText(renderCitationSubject(normalized.subject, draft)).slice(0, 132);
+  const subject = cleanCitationSubject(renderCitationSubject(normalized.subject, baseDraft)).slice(0, 132);
 
   return {
-    ...draft,
+    ...baseDraft,
     templateId: normalized.id,
     citationTemplate: normalized,
     sectionValues,

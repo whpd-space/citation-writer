@@ -9,6 +9,7 @@ import {
   citationTemplateUsesOffenses,
   citationTemplates,
   chargesForOffenses,
+  cleanCitationSubject,
   cleanCitationText,
   DEFAULT_CITATION_TEMPLATE_ID,
   findCitationTemplate,
@@ -911,6 +912,8 @@ function renderComposer() {
         <textarea data-draft-section-id="${h(section.id)}" data-draft-section-editor="${h(section.editor)}" ${section.optional ? 'placeholder="Leave blank to omit this section"' : ''}>${h(state.draft.sectionValues?.[section.id] || '')}</textarea>
       </label>
     `).join('');
+  const hasCustomBody = Object.prototype.hasOwnProperty.call(state.draft, 'body');
+  const bodySource = hasCustomBody ? state.draft.body : buildCitation(state.draft).body;
   const shortTitleField = usesShortTitle ? `
     <label class="composer-field">
       <span>Short title</span>
@@ -993,6 +996,23 @@ function renderComposer() {
         </div>
         ${offenseSelection}
         ${templateSectionEditors}
+        <label class="composer-field citation-body-editor-field">
+          <span>Full EVE Mail body / HTML</span>
+          <div class="citation-body-toolbar" role="toolbar" aria-label="Message body formatting">
+            <button type="button" class="button button-ghost button-small" data-action="format-body" data-body-format="bold" aria-label="Bold selected body text"><b>B</b></button>
+            <button type="button" class="button button-ghost button-small" data-action="format-body" data-body-format="italic" aria-label="Italicize selected body text"><i>I</i></button>
+            <button type="button" class="button button-ghost button-small" data-action="format-body" data-body-format="underline" aria-label="Underline selected body text"><u>U</u></button>
+            <button type="button" class="button button-ghost button-small" data-action="format-body" data-body-format="strike" aria-label="Strike through selected body text"><s>S</s></button>
+            <label class="citation-body-color-control">
+              <span>Text color</span>
+              <input id="citation-body-color" type="color" value="#ffffff" aria-label="Selected body text color">
+            </label>
+            <button type="button" class="button button-ghost button-small" data-action="format-body" data-body-format="color">Apply color</button>
+            <button type="button" class="button button-ghost button-small" data-action="reset-body" ${hasCustomBody ? '' : 'disabled'}>Rebuild from fields</button>
+          </div>
+          <textarea id="citation-body-editor" maxlength="12000" spellcheck="false">${h(bodySource)}</textarea>
+          <small>Every part of the message body is editable and can use safe EVE HTML. Select text for quick formatting or edit the markup directly. Once customized, the body is independent from the fields above until you rebuild it. The subject always remains plain text.</small>
+        </label>
         ${senderWarning(killmail, sender, group)}
       </div>
       <div class="citation-output">
@@ -1118,6 +1138,8 @@ function refreshCitationPreview() {
   if (!subject || !preview) return;
   subject.textContent = citation.subject;
   preview.innerHTML = citation.body.replace(/\n/g, '<br>');
+  const bodyEditor = document.getElementById('citation-body-editor');
+  if (bodyEditor && !Object.prototype.hasOwnProperty.call(state.draft, 'body')) bodyEditor.value = citation.body;
   document.getElementById('citation-size').textContent = `${citation.subject.length}/150 subject · ${citation.body.length}/8,000 body`;
   document.getElementById('citation-validation').innerHTML = errors.length
     ? `<ul class="validation-list">${errors.map((error) => `<li>${h(error)}</li>`).join('')}</ul>`
@@ -1605,6 +1627,33 @@ async function copyText(value, message) {
     textarea.remove();
     showToast(message);
   }
+}
+
+function formatCitationBody(format) {
+  const editor = document.getElementById('citation-body-editor');
+  if (!editor || !state.draft) return;
+  const wrappers = {
+    bold: ['<b>', '</b>'],
+    italic: ['<i>', '</i>'],
+    underline: ['<u>', '</u>'],
+    strike: ['<s>', '</s>']
+  };
+  const color = document.getElementById('citation-body-color')?.value || '#ffffff';
+  const [prefix, suffix] = format === 'color'
+    ? [`<font color="${color}">`, '</font>']
+    : (wrappers[format] || ['', '']);
+  if (!prefix) return;
+
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const selected = editor.value.slice(start, end);
+  editor.setRangeText(`${prefix}${selected}${suffix}`, start, end, 'end');
+  state.draft.body = editor.value;
+  refreshCitationPreview();
+  editor.focus();
+  editor.setSelectionRange(start + prefix.length, start + prefix.length + selected.length);
+  const resetButton = document.querySelector('[data-action="reset-body"]');
+  if (resetButton) resetButton.disabled = false;
 }
 
 function clearResolvedManualRecipient() {
@@ -2258,6 +2307,16 @@ function bindEvents() {
       renderComposer();
       return;
     }
+    if (action === 'format-body') {
+      formatCitationBody(event.target.closest('[data-body-format]')?.dataset.bodyFormat);
+      return;
+    }
+    if (action === 'reset-body' && state.draft) {
+      delete state.draft.body;
+      renderComposer();
+      showToast('Message body rebuilt from the citation fields.');
+      return;
+    }
     if (action === 'copy-subject') return copyText(buildCitation(state.draft).subject, 'Citation subject copied.');
     if (action === 'copy-body') return copyText(buildCitation(state.draft).body, 'Citation HTML copied.');
     if (action === 'send-citation') return sendCitation();
@@ -2280,7 +2339,8 @@ function bindEvents() {
     }
 
     if (event.target.id === 'citation-template-subject' && state.templateEditorDraft) {
-      state.templateEditorDraft.subject = event.target.value;
+      state.templateEditorDraft.subject = cleanCitationSubject(event.target.value);
+      if (event.target.value !== state.templateEditorDraft.subject) event.target.value = state.templateEditorDraft.subject;
       return;
     }
 
@@ -2295,6 +2355,13 @@ function bindEvents() {
     }
 
     if (!state.draft) return;
+    if (event.target.id === 'citation-body-editor') {
+      state.draft.body = event.target.value;
+      refreshCitationPreview();
+      const resetButton = document.querySelector('[data-action="reset-body"]');
+      if (resetButton) resetButton.disabled = false;
+      return;
+    }
     const draftSectionId = event.target.dataset.draftSectionId;
     if (draftSectionId) {
       const value = event.target.dataset.draftSectionEditor === 'list'
@@ -2309,7 +2376,10 @@ function bindEvents() {
     if (field) {
       const priorGeneratedSubject = field === 'subject' ? '' : generatedSubjectForDraft(state.draft);
       const shouldRefreshSubject = field !== 'subject' && state.draft.subject === priorGeneratedSubject;
-      state.draft[field] = cleanCitationText(event.target.value);
+      state.draft[field] = field === 'subject'
+        ? cleanCitationSubject(event.target.value)
+        : cleanCitationText(event.target.value);
+      if (field === 'subject' && event.target.value !== state.draft.subject) event.target.value = state.draft.subject;
       if (shouldRefreshSubject) {
         state.draft.subject = generatedSubjectForDraft(state.draft);
         const subjectInput = document.querySelector('[data-draft-field="subject"]');
@@ -2396,7 +2466,10 @@ function bindEvents() {
     }
     const field = event.target.dataset.draftField;
     if (field && state.draft) {
-      state.draft[field] = cleanCitationText(event.target.value);
+      state.draft[field] = field === 'subject'
+        ? cleanCitationSubject(event.target.value)
+        : cleanCitationText(event.target.value);
+      if (field === 'subject' && event.target.value !== state.draft.subject) event.target.value = state.draft.subject;
       refreshCitationPreview();
     }
     if (event.target.matches('input[name="sender-mode"]')) {
