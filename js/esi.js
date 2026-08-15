@@ -408,7 +408,6 @@ export class ESIClient {
   }
 
   async zkillValue(killmailId, killmailHash = '', {
-    retryDelay = 3000,
     submissionInterval = ZKILL_SUBMISSION_INTERVAL_MS
   } = {}) {
     const normalizedId = Number(killmailId);
@@ -421,44 +420,28 @@ export class ESIClient {
       throw new Error('The killmail has no valid hash to submit to zKillboard.');
     }
 
-    const fetchValue = async () => {
-      const response = await fetch(`https://zkillboard.com/api/killID/${normalizedId}/`, {
-        headers: { Accept: 'application/json' },
-        cache: 'no-store'
-      });
-      if (!response.ok) throw new Error(`zKillboard value lookup returned ${response.status}.`);
-      return extractZkillValue(await response.json());
-    };
-
+    let response;
     try {
-      const response = await this.queueZkillSubmission(
+      response = await this.queueZkillSubmission(
         () => fetch(`https://zkillboard.com/api/killmail/add/${normalizedId}/${encodeURIComponent(normalizedHash)}/`, {
           method: 'POST',
           headers: { Accept: 'application/json' }
         }),
         submissionInterval
       );
-      // zKillboard documents 408 as accepted but still processing.
-      if (!response.ok && response.status !== 408) {
-        throw new Error(`zKillboard killmail submission returned ${response.status}.`);
-      }
     } catch (error) {
       throw new Error(`Unable to submit killmail to zKillboard: ${error.message}`);
     }
 
-    let lastError;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelay));
-      try {
-        const totalValue = await fetchValue();
-        if (totalValue) return totalValue;
-        lastError = new Error('zKillboard did not return a total value for this killmail.');
-      } catch (error) {
-        lastError = error;
-      }
+    if (!response.ok && response.status !== 408) {
+      throw new Error(`zKillboard killmail submission returned ${response.status}.`);
     }
 
-    throw new Error(`zKillboard appraisal remained unavailable after 5 retries: ${lastError.message}`);
+    const submissionPayload = await parseResponse(response).catch(() => null);
+    const totalValue = extractZkillValue(submissionPayload?.package);
+    if (totalValue) return totalValue;
+
+    throw new Error('zKillboard submission did not return a processed package with a total value.');
   }
 
   async zkillKillmail(killmailId) {
