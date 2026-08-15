@@ -799,31 +799,32 @@ test('reads total value from the zKillboard killID response shape', () => {
   assert.equal(extractZkillValue([]), null);
 });
 
-test('submits a killmail before requesting its zKillboard appraisal', async () => {
+test('uses the package returned by a processed zKillboard submission without polling killID', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
-  let appraisalRequests = 0;
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ url, options });
-    if (options.method === 'POST') return { ok: true, status: 200 };
-    appraisalRequests += 1;
+    if (options.method !== 'POST') throw new Error('Unexpected zKillboard value lookup.');
     return {
       ok: true,
       status: 200,
-      json: async () => appraisalRequests < 3 ? [] : [{ zkb: { totalValue: 42000000 } }]
+      text: async () => JSON.stringify({
+        processed: true,
+        package: [{
+          killmail_id: 136980595,
+          zkb: { totalValue: 42000000 }
+        }]
+      })
     };
   };
 
   try {
     const value = await new ESIClient(null).zkillValue(
       136980595,
-      'baa8832d86d498781edbcc99363700213787f761',
-      { retryDelay: 0 }
+      'baa8832d86d498781edbcc99363700213787f761'
     );
     assert.equal(value, 42000000);
-    assert.equal(appraisalRequests, 3);
-    assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
-    assert.deepEqual(calls.map((call) => call.options.method || 'GET'), ['POST', 'GET', 'GET', 'GET']);
+    assert.deepEqual(calls.map((call) => call.options.method || 'GET'), ['POST']);
     assert.equal(
       calls.find((call) => call.options.method === 'POST').url,
       'https://zkillboard.com/api/killmail/add/136980595/baa8832d86d498781edbcc99363700213787f761/'
@@ -833,48 +834,53 @@ test('submits a killmail before requesting its zKillboard appraisal', async () =
   }
 });
 
-test('tries a submitted zKillboard appraisal five times before failing', async () => {
+test('does not poll killID when a zKillboard submission has no processed package', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ url, options });
-    if (options.method === 'POST') return { ok: true, status: 200 };
-    return { ok: true, status: 200, json: async () => [] };
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ processed: false })
+    };
   };
 
   try {
     await assert.rejects(
       () => new ESIClient(null).zkillValue(
         136980595,
-        'baa8832d86d498781edbcc99363700213787f761',
-        { retryDelay: 0 }
+        'baa8832d86d498781edbcc99363700213787f761'
       ),
-      /remained unavailable after 5 retries/
+      /did not return a processed package/
     );
-    assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
-    assert.equal(calls.filter((call) => call.options.method !== 'POST').length, 5);
+    assert.deepEqual(calls.map((call) => call.options.method || 'GET'), ['POST']);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('continues appraisal when zKillboard accepts a submission but returns 408 while processing', async () => {
+test('does not poll killID when zKillboard returns 408 while still processing', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ url, options });
-    if (options.method === 'POST') return { ok: false, status: 408 };
-    return { ok: true, status: 200, json: async () => [{ zkb: { totalValue: 42000000 } }] };
+    return {
+      ok: false,
+      status: 408,
+      text: async () => JSON.stringify({ processed: false })
+    };
   };
 
   try {
-    const value = await new ESIClient(null).zkillValue(
-      136980595,
-      'baa8832d86d498781edbcc99363700213787f761',
-      { retryDelay: 0 }
+    await assert.rejects(
+      () => new ESIClient(null).zkillValue(
+        136980595,
+        'baa8832d86d498781edbcc99363700213787f761'
+      ),
+      /did not return a processed package/
     );
-    assert.equal(value, 42000000);
-    assert.deepEqual(calls.map((call) => call.options.method || 'GET'), ['POST', 'GET']);
+    assert.deepEqual(calls.map((call) => call.options.method || 'GET'), ['POST']);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -886,17 +892,24 @@ test('queues zKillboard submissions one at a time at the configured interval', a
   globalThis.fetch = async (_url, options = {}) => {
     if (options.method === 'POST') {
       postTimes.push(Date.now());
-      return { ok: true, status: 200 };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          processed: true,
+          package: [{ zkb: { totalValue: 42000000 } }]
+        })
+      };
     }
-    return { ok: true, status: 200, json: async () => [{ zkb: { totalValue: 42000000 } }] };
+    throw new Error('Unexpected zKillboard value lookup.');
   };
 
   try {
     const client = new ESIClient(null);
     await Promise.all([
-      client.zkillValue(136980595, 'baa8832d86d498781edbcc99363700213787f761', { retryDelay: 0, submissionInterval: 20 }),
-      client.zkillValue(136980596, 'caa8832d86d498781edbcc99363700213787f762', { retryDelay: 0, submissionInterval: 20 }),
-      client.zkillValue(136980597, 'daa8832d86d498781edbcc99363700213787f763', { retryDelay: 0, submissionInterval: 20 })
+      client.zkillValue(136980595, 'baa8832d86d498781edbcc99363700213787f761', { submissionInterval: 20 }),
+      client.zkillValue(136980596, 'caa8832d86d498781edbcc99363700213787f762', { submissionInterval: 20 }),
+      client.zkillValue(136980597, 'daa8832d86d498781edbcc99363700213787f763', { submissionInterval: 20 })
     ]);
     assert.equal(postTimes.length, 3);
     assert.ok(postTimes[1] - postTimes[0] >= 18);
